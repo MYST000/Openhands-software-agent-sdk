@@ -6,7 +6,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.types import SourceType, ToolCallID
 
 
 HookEventType = Literal[
@@ -44,6 +44,10 @@ class HookExecutionEvent(Event):
         default=None,
         description="Tool name for PreToolUse/PostToolUse hooks",
     )
+    tool_call_id: ToolCallID | None = Field(
+        default=None,
+        description="Tool call ID for PreToolUse/PostToolUse hooks",
+    )
 
     # Execution result
     success: bool = Field(..., description="Whether the hook executed successfully")
@@ -71,6 +75,10 @@ class HookExecutionEvent(Event):
     action_id: str | None = Field(
         default=None,
         description="ID of the action this hook is associated with (PreToolUse/PostToolUse)",  # noqa: E501
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="ID of the conversation/session this hook is associated with",
     )
     message_id: str | None = Field(
         default=None,

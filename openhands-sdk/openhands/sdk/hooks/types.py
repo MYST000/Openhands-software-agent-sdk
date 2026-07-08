@@ -22,6 +22,7 @@ class HookEvent(BaseModel):
 
     event_type: HookEventType
     tool_name: str | None = None
+    tool_call_id: str | None = None
     tool_input: dict[str, Any] | None = None
     tool_response: dict[str, Any] | None = None
     message: str | None = None

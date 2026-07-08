@@ -31,6 +31,7 @@ class TestHookExecutor:
         return HookEvent(
             event_type=HookEventType.PRE_TOOL_USE,
             tool_name="BashTool",
+            tool_call_id="call-test-1",
             tool_input={"command": "ls -la"},
             session_id="test-session",
         )
@@ -55,6 +56,8 @@ class TestHookExecutor:
         output_data = json.loads(result.stdout)
         assert output_data["event_type"] == "PreToolUse"
         assert output_data["tool_name"] == "BashTool"
+        assert output_data["tool_call_id"] == "call-test-1"
+        assert output_data["session_id"] == "test-session"
 
     def test_execute_blocking_exit_code(self, executor, sample_event):
         """Test that exit code 2 blocks the operation."""
@@ -86,7 +89,8 @@ class TestHookExecutor:
             command=python_command(
                 "import os; "
                 "print(f\"SESSION={os.environ['OPENHANDS_SESSION_ID']}\"); "
-                "print(f\"TOOL={os.environ['OPENHANDS_TOOL_NAME']}\")"
+                "print(f\"TOOL={os.environ['OPENHANDS_TOOL_NAME']}\"); "
+                "print(f\"TOOL_CALL={os.environ['OPENHANDS_TOOL_CALL_ID']}\")"
             )
         )
 
@@ -95,6 +99,7 @@ class TestHookExecutor:
         assert result.success
         assert "SESSION=test-session" in result.stdout
         assert "TOOL=BashTool" in result.stdout
+        assert "TOOL_CALL=call-test-1" in result.stdout
 
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""

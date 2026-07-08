@@ -76,6 +76,7 @@ class HookEventProcessor:
         hook_command: str,
         result: HookResult,
         tool_name: str | None = None,
+        tool_call_id: str | None = None,
         action_id: str | None = None,
         message_id: str | None = None,
         hook_input: dict[str, Any] | None = None,
@@ -88,6 +89,7 @@ class HookEventProcessor:
             hook_event_type=hook_event_type.value,
             hook_command=hook_command,
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
             success=result.success,
             blocked=result.blocked,
             exit_code=result.exit_code,
@@ -97,6 +99,7 @@ class HookEventProcessor:
             additional_context=_truncate_hook_log(result.additional_context),
             error=_truncate_hook_log(result.error),
             action_id=action_id,
+            session_id=self.hook_manager.session_id,
             message_id=message_id,
             hook_input=hook_input,
         )
@@ -130,6 +133,7 @@ class HookEventProcessor:
 
         tool_name = event.tool_name
         tool_input: dict[str, Any] = {}
+        tool_call_id = event.tool_call_id
 
         # Extract tool input from action
         if event.action is not None:
@@ -146,6 +150,7 @@ class HookEventProcessor:
         should_continue, results = self.hook_manager.run_pre_tool_use(
             tool_name=tool_name,
             tool_input=tool_input,
+            tool_call_id=tool_call_id,
         )
 
         # Emit HookExecutionEvents for each hook
@@ -155,8 +160,13 @@ class HookEventProcessor:
                 hook_command=hook.display_command,
                 result=result,
                 tool_name=tool_name,
+                tool_call_id=tool_call_id,
                 action_id=event.id,
-                hook_input={"tool_name": tool_name, "tool_input": tool_input},
+                hook_input={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "tool_input": tool_input,
+                },
             )
 
         if not should_continue:
@@ -195,6 +205,7 @@ class HookEventProcessor:
             return
 
         tool_name = event.tool_name
+        tool_call_id = event.tool_call_id
         tool_input: dict[str, Any] = {}
         tool_response: dict[str, Any] = {}
 
@@ -221,6 +232,7 @@ class HookEventProcessor:
             tool_name=tool_name,
             tool_input=tool_input,
             tool_response=tool_response,
+            tool_call_id=tool_call_id,
         )
 
         # Emit HookExecutionEvents for each hook and log errors
@@ -230,9 +242,11 @@ class HookEventProcessor:
                 hook_command=hook.display_command,
                 result=result,
                 tool_name=tool_name,
+                tool_call_id=tool_call_id,
                 action_id=action_event.id,
                 hook_input={
                     "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
                     "tool_input": tool_input,
                     "tool_response": tool_response,
                 },

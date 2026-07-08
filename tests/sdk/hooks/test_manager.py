@@ -1,5 +1,7 @@
 """Tests for HookManager."""
 
+import json
+
 import pytest
 
 from openhands.sdk.hooks.config import HookConfig
@@ -55,6 +57,46 @@ class TestHookManager:
         assert not should_continue
         assert len(results) == 1
         assert results[0].blocked
+
+    def test_run_pre_tool_use_passes_session_and_tool_call_id(
+        self, tmp_working_dir, tmp_path
+    ):
+        """Test that PreToolUse hook stdin includes session_id and tool_call_id."""
+        log_file = tmp_path / "pre_tool_payload.json"
+        command = python_command(
+            "import sys; "
+            "from pathlib import Path; "
+            f"Path({str(log_file)!r}).write_text(sys.stdin.read())"
+        )
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "BashTool",
+                            "hooks": [{"type": "command", "command": command}],
+                        }
+                    ]
+                }
+            }
+        )
+        manager = HookManager(
+            config=config,
+            working_dir=tmp_working_dir,
+            session_id="session-123",
+        )
+
+        should_continue, results = manager.run_pre_tool_use(
+            tool_name="BashTool",
+            tool_input={"command": "ls"},
+            tool_call_id="call-123",
+        )
+
+        assert should_continue
+        assert len(results) == 1
+        payload = json.loads(log_file.read_text())
+        assert payload["session_id"] == "session-123"
+        assert payload["tool_call_id"] == "call-123"
 
     def test_run_post_tool_use(self, tmp_working_dir, tmp_path):
         """Test PostToolUse hooks execute."""

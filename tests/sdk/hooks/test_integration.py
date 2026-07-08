@@ -989,6 +989,67 @@ class TestHookExecutionEventEmission:
         assert hook_event.exit_code == 0
         assert hook_event.source == "hook"
 
+    def test_hook_execution_event_includes_session_and_tool_call_id(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test PreToolUse HookExecutionEvent carries session/tool call IDs."""
+        from openhands.sdk.llm import MessageToolCall
+        from openhands.sdk.tool.builtins import ThinkAction
+
+        command = _json_command({"decision": "allow"})
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Think",
+                            "hooks": [{"type": "command", "command": command}],
+                        }
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(
+            config=config,
+            working_dir=str(tmp_path),
+            session_id="session-abc",
+        )
+        processed_events = []
+
+        def capture_callback(event):
+            processed_events.append(event)
+
+        processor = HookEventProcessor(
+            hook_manager=manager,
+            original_callback=capture_callback,
+            emit_hook_events=True,
+        )
+        processor.set_conversation_state(mock_conversation_state)
+
+        action_event = ActionEvent(
+            source="agent",
+            tool_name="Think",
+            tool_call_id="call-abc",
+            tool_call=MessageToolCall(
+                id="call-abc", name="Think", arguments="{}", origin="completion"
+            ),
+            llm_response_id="response-abc",
+            action=ThinkAction(thought="test thought"),
+            thought=[],
+        )
+
+        processor.on_event(action_event)
+
+        hook_events = [e for e in processed_events if isinstance(e, HookExecutionEvent)]
+        assert len(hook_events) == 1
+        hook_event = hook_events[0]
+        assert hook_event.session_id == "session-abc"
+        assert hook_event.tool_call_id == "call-abc"
+        assert hook_event.action_id == action_event.id
+        assert hook_event.hook_input is not None
+        assert hook_event.hook_input["tool_call_id"] == "call-abc"
+
     def test_hook_execution_event_not_emitted_when_disabled(
         self, tmp_path, mock_conversation_state
     ):

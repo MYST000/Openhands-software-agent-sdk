@@ -50,6 +50,7 @@ class HookManager:
         self,
         event_type: HookEventType,
         tool_name: str | None = None,
+        tool_call_id: str | None = None,
         tool_input: dict[str, Any] | None = None,
         tool_response: dict[str, Any] | None = None,
         message: str | None = None,
@@ -59,6 +60,7 @@ class HookManager:
         return HookEvent(
             event_type=event_type,
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
             tool_input=tool_input,
             tool_response=tool_response,
             message=message,
@@ -71,6 +73,7 @@ class HookManager:
         self,
         tool_name: str,
         tool_input: dict[str, Any],
+        tool_call_id: str | None = None,
     ) -> tuple[bool, list[HookResult]]:
         """Run PreToolUse hooks. Returns (should_continue, results)."""
         hooks = self.config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, tool_name)
@@ -88,6 +91,7 @@ class HookManager:
         event = self._create_event(
             HookEventType.PRE_TOOL_USE,
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
             tool_input=tool_input,
         )
 
@@ -103,6 +107,7 @@ class HookManager:
         tool_name: str,
         tool_input: dict[str, Any],
         tool_response: dict[str, Any],
+        tool_call_id: str | None = None,
     ) -> list[HookResult]:
         """Run PostToolUse hooks after a tool completes."""
         hooks = self.config.get_hooks_for_event(HookEventType.POST_TOOL_USE, tool_name)
@@ -112,6 +117,7 @@ class HookManager:
         event = self._create_event(
             HookEventType.POST_TOOL_USE,
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
             tool_input=tool_input,
             tool_response=tool_response,
         )

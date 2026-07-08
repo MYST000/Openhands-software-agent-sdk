@@ -394,6 +394,8 @@ class HookExecutor:
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
         if event.tool_name:
             hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
+        if event.tool_call_id:
+            hook_env["OPENHANDS_TOOL_CALL_ID"] = event.tool_call_id
 
         if env:
             hook_env.update(env)

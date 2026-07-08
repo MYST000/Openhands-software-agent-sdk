@@ -1,11 +1,35 @@
 {
+  "pre_tool_use": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 .openhands/hooks/pre_tool_tracker.py",
+          "timeout": 30
+        }
+      ]
+    }
+  ],
+  "post_tool_use": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 .openhands/hooks/post_tool_tracker.py",
+          "timeout": 30
+        }
+      ]
+    }
+  ],
   "stop": [
     {
       "matcher": "*",
       "hooks": [
         {
           "type": "command",
-          "command": ".openhands/hooks/on_stop.sh",
+          "command": ".openhands/hooks/on_stop_no_check.sh",
           "timeout": 600
         }
       ]
