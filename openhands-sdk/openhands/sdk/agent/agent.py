@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -46,10 +48,12 @@ from openhands.sdk.event import (
     TokenEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
 )
+from openhands.sdk.flowpilot import context_digest
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -95,6 +99,23 @@ from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 logger = get_logger(__name__)
 maybe_init_laminar()
+
+
+def _flowpilot_canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _flowpilot_body_options(options: dict[str, Any]) -> dict[str, Any]:
+    transport_only = {
+        "api_base",
+        "api_key",
+        "api_version",
+        "custom_llm_provider",
+        "drop_params",
+        "extra_headers",
+        "timeout",
+    }
+    return {key: value for key, value in options.items() if key not in transport_only}
 
 
 def _tool_has_summary_param(tool: ToolDefinition) -> bool:
@@ -350,6 +371,13 @@ class _ActionBatch:
             mark_finished()
 
 
+@dataclass(frozen=True, slots=True)
+class _FlowPilotDeferredBatch:
+    provider_messages: list[dict[str, Any]]
+    events: list[Event]
+    llm_messages: list[Message]
+
+
 class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
@@ -562,6 +590,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
         )
+        self._report_flowpilot_blocked_actions(conversation, batch)
         batch.emit(on_event)
         batch.finalize(
             on_event=on_event,
@@ -588,14 +617,21 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
-        batch = await _ActionBatch.aprepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-        )
+        try:
+            batch = await _ActionBatch.aprepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+            )
+        except asyncio.CancelledError:
+            if conversation._flowpilot_runtime is not None:
+                for action_event in action_events:
+                    conversation._flowpilot_runtime.tool_cancel(action_event)
+            raise
+        self._report_flowpilot_blocked_actions(conversation, batch)
         batch.emit(on_event)
         batch.finalize(
             on_event=on_event,
@@ -688,13 +724,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = make_llm_completion(
-                self.llm,
-                _messages,
-                tools=list(self.tools_map.values()),
-                on_token=on_token,
-                call_context=call_context,
-            )
+            try:
+                llm_response = make_llm_completion(
+                    self.llm,
+                    _messages,
+                    tools=list(self.tools_map.values()),
+                    on_token=on_token,
+                    call_context=call_context,
+                )
+            except BaseException:
+                conversation.abort_flowpilot_llm_call(call_context)
+                raise
+            conversation.commit_flowpilot_llm_call(call_context)
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
             error_message = MessageEvent(
@@ -772,6 +813,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             raise e
 
         # LLMResponse already contains the converted message and metrics snapshot
+        handled, llm_response = self._handle_flowpilot_deferred_sync(
+            llm_response,
+            messages=_messages,
+            call_context=call_context,
+            conversation=conversation,
+            state=state,
+            on_event=on_event,
+            on_token=on_token,
+        )
+        if handled:
+            return
         message: Message = llm_response.message
         response_type = classify_response(message)
 
@@ -876,13 +928,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = await amake_llm_completion(
-                self.llm,
-                _messages,
-                tools=list(self.tools_map.values()),
-                on_token=on_token,
-                call_context=call_context,
-            )
+            try:
+                llm_response = await amake_llm_completion(
+                    self.llm,
+                    _messages,
+                    tools=list(self.tools_map.values()),
+                    on_token=on_token,
+                    call_context=call_context,
+                )
+            except BaseException:
+                conversation.abort_flowpilot_llm_call(call_context)
+                raise
+            conversation.commit_flowpilot_llm_call(call_context)
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
             error_message = MessageEvent(
@@ -962,6 +1019,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             self._log_context_window_exceeded_warning()
             raise e
 
+        handled, llm_response = await self._handle_flowpilot_deferred_async(
+            llm_response,
+            messages=_messages,
+            call_context=call_context,
+            conversation=conversation,
+            state=state,
+            on_event=on_event,
+            on_token=on_token,
+        )
+        if handled:
+            return
         message: Message = llm_response.message
         response_type = classify_response(message)
 
@@ -983,6 +1051,810 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_event,
                     response_type=response_type,
                 )
+
+    def _handle_flowpilot_deferred_sync(
+        self,
+        llm_response: LLMResponse,
+        *,
+        messages: list[Message],
+        call_context: LLMCallContext,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None,
+    ) -> tuple[bool, LLMResponse]:
+        runtime = conversation._flowpilot_runtime
+        if not self._flowpilot_delegation_is_safe(conversation, state, messages):
+            return False, llm_response
+        assert runtime is not None
+        identity = runtime.tool_identity
+        if identity is None:
+            return False, llm_response
+        try:
+            snapshot = self._flowpilot_request_body(messages, call_context)
+        except Exception:
+            logger.warning("FlowPilot DCS request snapshot is unsafe", exc_info=True)
+            return False, llm_response
+
+        batches: list[_FlowPilotDeferredBatch] = []
+        hidden_messages: list[Message] = []
+        delegated = False
+        current = llm_response
+        while True:
+            response_type = classify_response(current.message)
+            if response_type is LLMResponseType.TOOL_CALLS:
+                actions = self._flowpilot_capture_actions(
+                    current, conversation=conversation, state=state
+                )
+                if actions is None:
+                    if batches:
+                        self._flowpilot_sync_batches(
+                            runtime,
+                            batches,
+                            conversation=conversation,
+                            on_event=on_event,
+                            barrier_reason="failure",
+                        )
+                    return False, current
+                if not self._flowpilot_actions_are_reusable(
+                    actions, runtime.config.reusable_web_tools
+                ):
+                    if not batches:
+                        return False, current
+                    barrier_messages = self._flowpilot_provider_messages(
+                        LLMConvertibleEvent.events_to_messages(list(actions))
+                    )
+                    batches.append(
+                        _FlowPilotDeferredBatch(
+                            provider_messages=barrier_messages,
+                            events=list(actions),
+                            llm_messages=[],
+                        )
+                    )
+                    self._flowpilot_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="local_tool",
+                        parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                        barrier_messages=tuple(barrier_messages),
+                        pending_local_tool_call_ids=tuple(
+                            item.tool_call_id for item in actions
+                        ),
+                    )
+                    self._execute_actions(conversation, actions, on_event)
+                    self._maybe_emit_vllm_tokens(current, on_event)
+                    return True, current
+                if not delegated:
+                    runtime.grant_delegation(
+                        identity,
+                        api_kind=(
+                            "responses" if self.llm.uses_responses_api() else "chat"
+                        ),
+                        request_snapshot=snapshot,
+                    )
+                    delegated = True
+                try:
+                    decisions = [
+                        runtime.resolve_deferred_reuse(item) for item in actions
+                    ]
+                except Exception:
+                    logger.warning(
+                        "FlowPilot deferred reuse resolution failed", exc_info=True
+                    )
+                    if batches:
+                        self._flowpilot_sync_batches(
+                            runtime,
+                            batches,
+                            conversation=conversation,
+                            on_event=on_event,
+                            barrier_reason="failure",
+                        )
+                    else:
+                        runtime.release_delegation()
+                    return False, current
+                if not all(
+                    item.get("decision") == "defer_with_cached_result"
+                    for item in decisions
+                ):
+                    if not batches:
+                        runtime.release_delegation()
+                        return False, current
+                    action_messages: list[LLMConvertibleEvent] = list(actions)
+                    barrier_messages = self._flowpilot_provider_messages(
+                        LLMConvertibleEvent.events_to_messages(action_messages)
+                    )
+                    batches.append(
+                        _FlowPilotDeferredBatch(
+                            provider_messages=barrier_messages,
+                            events=list(actions),
+                            llm_messages=[],
+                        )
+                    )
+                    self._flowpilot_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="local_tool",
+                        parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                        barrier_messages=tuple(barrier_messages),
+                        pending_local_tool_call_ids=tuple(
+                            item.tool_call_id for item in actions
+                        ),
+                    )
+                    self._execute_actions(conversation, actions, on_event)
+                    self._maybe_emit_vllm_tokens(current, on_event)
+                    return True, current
+
+                batch = self._flowpilot_cached_batch(
+                    current, actions, decisions, runtime
+                )
+                expected_last_seq = runtime.deferred_last_seq
+                try:
+                    runtime.append_deferred_context(
+                        expected_last_seq=expected_last_seq,
+                        parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                        messages=batch.provider_messages,
+                        tool_call_ids=[item.tool_call_id for item in actions],
+                        resolution_receipts=[
+                            str(item["resolution_receipt"]) for item in decisions
+                        ],
+                        result_digests=[
+                            str(item["result_digest"]) for item in decisions
+                        ],
+                    )
+                except Exception:
+                    logger.warning("FlowPilot deferred append failed", exc_info=True)
+                    reconciled = runtime.reconcile_active_delegation()
+                    committed = reconciled.get("last_seq") == (
+                        expected_last_seq + len(batch.provider_messages)
+                    )
+                    if committed:
+                        batches.append(batch)
+                    if reconciled.get("sync_required"):
+                        self._flowpilot_sync_batches(
+                            runtime,
+                            batches,
+                            conversation=conversation,
+                            on_event=on_event,
+                            barrier_reason="failure",
+                        )
+                        return committed, current
+                    runtime.release_delegation()
+                    return False, current
+                batches.append(batch)
+                hidden_messages.extend(batch.llm_messages)
+                if runtime.deferred_sync_reason is not None:
+                    self._flowpilot_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason=runtime.deferred_sync_reason,
+                    )
+                    return True, current
+                try:
+                    continuation = runtime.prepare_internal_continuation(
+                        self._flowpilot_llm_call_id(runtime)
+                    )
+                except Exception:
+                    logger.warning(
+                        "FlowPilot deferred continuation failed", exc_info=True
+                    )
+                    self._flowpilot_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="failure",
+                    )
+                    return True, current
+                delegated_context = conversation.get_delegated_llm_call_context()
+                local_body = self._flowpilot_request_body(
+                    [*messages, *hidden_messages], delegated_context
+                )
+                if _flowpilot_canonical(continuation) != _flowpilot_canonical(
+                    local_body
+                ):
+                    self._flowpilot_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="failure",
+                    )
+                    return True, current
+                try:
+                    current = make_llm_completion(
+                        self.llm,
+                        [*messages, *hidden_messages],
+                        tools=list(self.tools_map.values()),
+                        on_token=on_token,
+                        call_context=delegated_context,
+                    )
+                except BaseException:
+                    conversation.abort_flowpilot_llm_call(delegated_context)
+                    self._flowpilot_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="failure",
+                    )
+                    raise
+                conversation.commit_flowpilot_llm_call(delegated_context)
+                continue
+
+            if not batches:
+                return False, current
+            if response_type is LLMResponseType.CONTENT:
+                event = MessageEvent(
+                    source="agent",
+                    llm_message=current.message,
+                    llm_response_id=current.id,
+                )
+                barrier_messages = self._flowpilot_provider_messages([current.message])
+                batches.append(
+                    _FlowPilotDeferredBatch(
+                        provider_messages=barrier_messages,
+                        events=[event],
+                        llm_messages=[],
+                    )
+                )
+                self._flowpilot_sync_batches(
+                    runtime,
+                    batches,
+                    conversation=conversation,
+                    on_event=on_event,
+                    barrier_reason="terminal_response",
+                    parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                    barrier_messages=tuple(barrier_messages),
+                )
+                self._maybe_emit_vllm_tokens(current, on_event)
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return True, current
+            self._flowpilot_sync_batches(
+                runtime,
+                batches,
+                conversation=conversation,
+                on_event=on_event,
+                barrier_reason="failure",
+            )
+            return False, current
+
+    async def _handle_flowpilot_deferred_async(
+        self,
+        llm_response: LLMResponse,
+        *,
+        messages: list[Message],
+        call_context: LLMCallContext,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None,
+    ) -> tuple[bool, LLMResponse]:
+        runtime = conversation._flowpilot_runtime
+        if not self._flowpilot_delegation_is_safe(conversation, state, messages):
+            return False, llm_response
+        assert runtime is not None
+        identity = runtime.tool_identity
+        if identity is None:
+            return False, llm_response
+        try:
+            snapshot = self._flowpilot_request_body(messages, call_context)
+        except Exception:
+            logger.warning("FlowPilot DCS request snapshot is unsafe", exc_info=True)
+            return False, llm_response
+
+        batches: list[_FlowPilotDeferredBatch] = []
+        hidden_messages: list[Message] = []
+        delegated = False
+        current = llm_response
+        while True:
+            response_type = classify_response(current.message)
+            if response_type is LLMResponseType.TOOL_CALLS:
+                actions = self._flowpilot_capture_actions(
+                    current, conversation=conversation, state=state
+                )
+                if actions is None:
+                    if batches:
+                        await self._flowpilot_async_sync_batches(
+                            runtime,
+                            batches,
+                            conversation=conversation,
+                            on_event=on_event,
+                            barrier_reason="failure",
+                        )
+                    return False, current
+                if not self._flowpilot_actions_are_reusable(
+                    actions, runtime.config.reusable_web_tools
+                ):
+                    if not batches:
+                        return False, current
+                    barrier_messages = self._flowpilot_provider_messages(
+                        LLMConvertibleEvent.events_to_messages(list(actions))
+                    )
+                    batches.append(
+                        _FlowPilotDeferredBatch(
+                            provider_messages=barrier_messages,
+                            events=list(actions),
+                            llm_messages=[],
+                        )
+                    )
+                    await self._flowpilot_async_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="local_tool",
+                        parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                        barrier_messages=tuple(barrier_messages),
+                        pending_local_tool_call_ids=tuple(
+                            item.tool_call_id for item in actions
+                        ),
+                    )
+                    await self._aexecute_actions(conversation, actions, on_event)
+                    self._maybe_emit_vllm_tokens(current, on_event)
+                    return True, current
+                if not delegated:
+                    await asyncio.to_thread(
+                        runtime.grant_delegation,
+                        identity,
+                        api_kind=(
+                            "responses" if self.llm.uses_responses_api() else "chat"
+                        ),
+                        request_snapshot=snapshot,
+                    )
+                    delegated = True
+                try:
+                    decisions = [
+                        await asyncio.to_thread(runtime.resolve_deferred_reuse, item)
+                        for item in actions
+                    ]
+                except Exception:
+                    logger.warning(
+                        "FlowPilot deferred reuse resolution failed", exc_info=True
+                    )
+                    if batches:
+                        await self._flowpilot_async_sync_batches(
+                            runtime,
+                            batches,
+                            conversation=conversation,
+                            on_event=on_event,
+                            barrier_reason="failure",
+                        )
+                    else:
+                        await asyncio.to_thread(runtime.release_delegation)
+                    return False, current
+                if not all(
+                    item.get("decision") == "defer_with_cached_result"
+                    for item in decisions
+                ):
+                    if not batches:
+                        await asyncio.to_thread(runtime.release_delegation)
+                        return False, current
+                    action_messages: list[LLMConvertibleEvent] = list(actions)
+                    barrier_messages = self._flowpilot_provider_messages(
+                        LLMConvertibleEvent.events_to_messages(action_messages)
+                    )
+                    batches.append(
+                        _FlowPilotDeferredBatch(
+                            provider_messages=barrier_messages,
+                            events=list(actions),
+                            llm_messages=[],
+                        )
+                    )
+                    await self._flowpilot_async_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="local_tool",
+                        parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                        barrier_messages=tuple(barrier_messages),
+                        pending_local_tool_call_ids=tuple(
+                            item.tool_call_id for item in actions
+                        ),
+                    )
+                    await self._aexecute_actions(conversation, actions, on_event)
+                    self._maybe_emit_vllm_tokens(current, on_event)
+                    return True, current
+
+                batch = self._flowpilot_cached_batch(
+                    current, actions, decisions, runtime
+                )
+                expected_last_seq = runtime.deferred_last_seq
+                try:
+                    await asyncio.to_thread(
+                        runtime.append_deferred_context,
+                        expected_last_seq=expected_last_seq,
+                        parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                        messages=batch.provider_messages,
+                        tool_call_ids=[item.tool_call_id for item in actions],
+                        resolution_receipts=[
+                            str(item["resolution_receipt"]) for item in decisions
+                        ],
+                        result_digests=[
+                            str(item["result_digest"]) for item in decisions
+                        ],
+                    )
+                except Exception:
+                    logger.warning("FlowPilot deferred append failed", exc_info=True)
+                    reconciled = await asyncio.to_thread(
+                        runtime.reconcile_active_delegation
+                    )
+                    committed = reconciled.get("last_seq") == (
+                        expected_last_seq + len(batch.provider_messages)
+                    )
+                    if committed:
+                        batches.append(batch)
+                    if reconciled.get("sync_required"):
+                        await self._flowpilot_async_sync_batches(
+                            runtime,
+                            batches,
+                            conversation=conversation,
+                            on_event=on_event,
+                            barrier_reason="failure",
+                        )
+                        return committed, current
+                    await asyncio.to_thread(runtime.release_delegation)
+                    return False, current
+                batches.append(batch)
+                hidden_messages.extend(batch.llm_messages)
+                if runtime.deferred_sync_reason is not None:
+                    await self._flowpilot_async_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason=runtime.deferred_sync_reason,
+                    )
+                    return True, current
+                try:
+                    continuation = await asyncio.to_thread(
+                        runtime.prepare_internal_continuation,
+                        self._flowpilot_llm_call_id(runtime),
+                    )
+                except Exception:
+                    logger.warning(
+                        "FlowPilot deferred continuation failed", exc_info=True
+                    )
+                    await self._flowpilot_async_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="failure",
+                    )
+                    return True, current
+                delegated_context = conversation.get_delegated_llm_call_context()
+                local_body = self._flowpilot_request_body(
+                    [*messages, *hidden_messages], delegated_context
+                )
+                if _flowpilot_canonical(continuation) != _flowpilot_canonical(
+                    local_body
+                ):
+                    await self._flowpilot_async_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="failure",
+                    )
+                    return True, current
+                try:
+                    current = await amake_llm_completion(
+                        self.llm,
+                        [*messages, *hidden_messages],
+                        tools=list(self.tools_map.values()),
+                        on_token=on_token,
+                        call_context=delegated_context,
+                    )
+                except BaseException:
+                    conversation.abort_flowpilot_llm_call(delegated_context)
+                    await self._flowpilot_async_sync_batches(
+                        runtime,
+                        batches,
+                        conversation=conversation,
+                        on_event=on_event,
+                        barrier_reason="failure",
+                    )
+                    raise
+                conversation.commit_flowpilot_llm_call(delegated_context)
+                continue
+
+            if not batches:
+                return False, current
+            if response_type is LLMResponseType.CONTENT:
+                event = MessageEvent(
+                    source="agent",
+                    llm_message=current.message,
+                    llm_response_id=current.id,
+                )
+                barrier_messages = self._flowpilot_provider_messages([current.message])
+                batches.append(
+                    _FlowPilotDeferredBatch(
+                        provider_messages=barrier_messages,
+                        events=[event],
+                        llm_messages=[],
+                    )
+                )
+                await self._flowpilot_async_sync_batches(
+                    runtime,
+                    batches,
+                    conversation=conversation,
+                    on_event=on_event,
+                    barrier_reason="terminal_response",
+                    parent_llm_call_id=self._flowpilot_llm_call_id(runtime),
+                    barrier_messages=tuple(barrier_messages),
+                )
+                self._maybe_emit_vllm_tokens(current, on_event)
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return True, current
+            await self._flowpilot_async_sync_batches(
+                runtime,
+                batches,
+                conversation=conversation,
+                on_event=on_event,
+                barrier_reason="failure",
+            )
+            return False, current
+
+    def _flowpilot_delegation_is_safe(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        messages: list[Message],
+    ) -> bool:
+        runtime = conversation._flowpilot_runtime
+        return bool(
+            runtime is not None
+            and runtime.config.deferred_context_enabled
+            and self.llm.native_tool_calling
+            and not self.llm.stream
+            and not self.llm.is_subscription
+            and not isinstance(self.llm, RouterLLM)
+            and not self.llm.is_caching_prompt_active()
+            and not self.llm.litellm_extra_body
+            and self.condenser is None
+            and self.critic is None
+            and state.security_analyzer is None
+            and not conversation.confirmation_policy_active
+            and conversation._hook_processor is None
+            and state.hook_config is None
+            and conversation.max_budget_per_run is None
+            and all(not item.contains_image for item in messages)
+        )
+
+    @staticmethod
+    def _flowpilot_llm_call_id(runtime: Any) -> str:
+        identity = runtime.tool_identity
+        if identity is None:
+            raise RuntimeError("FlowPilot has no completed LLM call identity")
+        return identity.llm_call_id
+
+    def _flowpilot_capture_actions(
+        self,
+        response: LLMResponse,
+        *,
+        conversation: LocalConversation,
+        state: ConversationState,
+    ) -> list[ActionEvent] | None:
+        message = response.message
+        if (
+            not message.tool_calls
+            or message.reasoning_content is not None
+            or message.thinking_blocks
+            or message.responses_reasoning_item is not None
+            or not all(isinstance(item, TextContent) for item in message.content)
+        ):
+            return None
+        captured: list[Event] = []
+        actions: list[ActionEvent] = []
+        thought = [item for item in message.content if isinstance(item, TextContent)]
+        for index, tool_call in enumerate(message.tool_calls):
+            action = self._get_action_event(
+                tool_call,
+                conversation=conversation,
+                llm_response_id=response.id,
+                on_event=captured.append,
+                security_analyzer=None,
+                thought=thought if index == 0 else [],
+            )
+            if action is None:
+                return None
+            actions.append(action)
+        if captured != actions or self._requires_user_confirmation(state, actions):
+            return None
+        return actions
+
+    def _flowpilot_actions_are_reusable(
+        self, actions: list[ActionEvent], reusable_tools: tuple[str, ...]
+    ) -> bool:
+        return bool(actions) and all(
+            action.action is not None
+            and action.tool_name in self.tools_map
+            and action.tool_name in reusable_tools
+            and (tool := self.tools_map[action.tool_name]).observation_type is not None
+            and tool.annotations is not None
+            and tool.annotations.readOnlyHint is True
+            for action in actions
+        )
+
+    def _flowpilot_cached_batch(
+        self,
+        response: LLMResponse,
+        actions: list[ActionEvent],
+        decisions: list[dict[str, Any]],
+        runtime: Any,
+    ) -> _FlowPilotDeferredBatch:
+        observations: list[ObservationEvent] = []
+        for action, decision in zip(actions, decisions, strict=True):
+            tool = self.tools_map[action.tool_name]
+            assert tool.observation_type is not None
+            observation = runtime.deferred_observation(tool.observation_type, decision)
+            observations.append(
+                ObservationEvent(
+                    observation=observation,
+                    action_id=action.id,
+                    tool_name=action.tool_name,
+                    tool_call_id=action.tool_call_id,
+                )
+            )
+        llm_messages = LLMConvertibleEvent.events_to_messages([*actions, *observations])
+        events: list[Event] = [*actions, *observations]
+        self._maybe_emit_vllm_tokens(response, events.append)
+        return _FlowPilotDeferredBatch(
+            provider_messages=self._flowpilot_provider_messages(llm_messages),
+            events=events,
+            llm_messages=llm_messages,
+        )
+
+    def _flowpilot_provider_messages(
+        self, messages: list[Message]
+    ) -> list[dict[str, Any]]:
+        if self.llm.uses_responses_api():
+            instructions, items = self.llm.format_messages_for_responses(messages)
+            if instructions is not None:
+                raise ValueError("DCS delta cannot contain Responses instructions")
+            return items
+        return self.llm.format_messages_for_llm(messages)
+
+    def _flowpilot_request_body(
+        self, messages: list[Message], call_context: LLMCallContext
+    ) -> dict[str, Any]:
+        tools = list(self.tools_map.values())
+        model = self.llm._litellm_call_kwargs()["model"]
+        if self.llm.uses_responses_api():
+            instructions, items, response_tools, kwargs, _ = (
+                self.llm._prepare_responses_params(
+                    messages,
+                    tools,
+                    None,
+                    False,
+                    True,
+                    {},
+                    call_context=call_context,
+                )
+            )
+            body = {
+                **_flowpilot_body_options(kwargs),
+                "model": model,
+                "input": items,
+                "instructions": instructions,
+                "tools": response_tools,
+            }
+        else:
+            formatted, _tools, use_mock, kwargs, _ = (
+                self.llm._prepare_completion_params(
+                    messages,
+                    tools,
+                    True,
+                    {},
+                    call_context=call_context,
+                )
+            )
+            if use_mock:
+                raise ValueError("DCS does not support mocked Tool calling")
+            body = {
+                **_flowpilot_body_options(kwargs),
+                "model": model,
+                "messages": formatted,
+            }
+        return json.loads(json.dumps(body, sort_keys=True, separators=(",", ":")))
+
+    def _flowpilot_sync_batches(
+        self,
+        runtime: Any,
+        batches: list[_FlowPilotDeferredBatch],
+        *,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        barrier_reason: str,
+        parent_llm_call_id: str | None = None,
+        barrier_messages: tuple[dict[str, Any], ...] = (),
+        pending_local_tool_call_ids: tuple[str, ...] = (),
+    ) -> None:
+        _ = on_event
+        runtime.synchronize_deferred_context(
+            barrier_reason=barrier_reason,
+            apply_atomically=lambda chunk: self._flowpilot_apply_chunk(
+                batches, chunk, conversation
+            ),
+            parent_llm_call_id=parent_llm_call_id,
+            barrier_messages=barrier_messages,
+            pending_local_tool_call_ids=pending_local_tool_call_ids,
+        )
+        if batches:
+            raise RuntimeError("FlowPilot sync omitted locally reconstructed events")
+
+    async def _flowpilot_async_sync_batches(
+        self,
+        runtime: Any,
+        batches: list[_FlowPilotDeferredBatch],
+        *,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        barrier_reason: str,
+        parent_llm_call_id: str | None = None,
+        barrier_messages: tuple[dict[str, Any], ...] = (),
+        pending_local_tool_call_ids: tuple[str, ...] = (),
+    ) -> None:
+        _ = on_event
+        await runtime.asynchronize_deferred_context(
+            barrier_reason=barrier_reason,
+            apply_atomically=lambda chunk: self._flowpilot_apply_chunk(
+                batches, chunk, conversation
+            ),
+            parent_llm_call_id=parent_llm_call_id,
+            barrier_messages=barrier_messages,
+            pending_local_tool_call_ids=pending_local_tool_call_ids,
+        )
+        if batches:
+            raise RuntimeError("FlowPilot sync omitted locally reconstructed events")
+
+    @staticmethod
+    def _flowpilot_apply_chunk(
+        batches: list[_FlowPilotDeferredBatch],
+        chunk: tuple[dict[str, Any], ...],
+        conversation: LocalConversation,
+    ) -> tuple[str, str]:
+        offset = 0
+        consumed: list[_FlowPilotDeferredBatch] = []
+        while offset < len(chunk):
+            if len(consumed) >= len(batches):
+                raise ValueError("FlowPilot sync contains unexpected provider messages")
+            batch = batches[len(consumed)]
+            end = offset + len(batch.provider_messages)
+            if end > len(chunk) or _flowpilot_canonical(
+                list(chunk[offset:end])
+            ) != _flowpilot_canonical(batch.provider_messages):
+                raise ValueError(
+                    "FlowPilot sync differs from reconstructed Agent history"
+                )
+            consumed.append(batch)
+            offset = end
+        events = [event for batch in consumed for event in batch.events]
+        if not events:
+            raise ValueError("FlowPilot sync chunk has no authoritative Agent events")
+        provider_messages = tuple(chunk[:offset])
+        conversation._apply_flowpilot_events_atomically(
+            events,
+            provider_messages,
+            recovery_batches=tuple(
+                (batch.events, tuple(batch.provider_messages)) for batch in batches
+            ),
+            recovery_batch_count=len(consumed),
+        )
+        del batches[: len(consumed)]
+        authoritative_events = list(conversation.state.active_branch())
+        if not authoritative_events or authoritative_events[-1].id != events[-1].id:
+            raise RuntimeError(
+                "FlowPilot sync callback did not persist the complete event chunk"
+            )
+        return events[-1].id, context_digest(authoritative_events)
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
@@ -1312,7 +2184,26 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "as it was checked earlier."
             )
 
-        # Execute actions!
+        # Execute actions. FlowPilot observes only this real local boundary.
+        if conversation._flowpilot_runtime is not None:
+            reused = conversation._flowpilot_runtime.resolve_reuse(
+                action_event, tool.observation_type
+            )
+            if reused is not None:
+                return [
+                    ObservationEvent(
+                        observation=reused,
+                        action_id=action_event.id,
+                        tool_name=tool.name,
+                        tool_call_id=action_event.tool_call.id,
+                    )
+                ]
+        telemetry_token = (
+            conversation._flowpilot_runtime.tool_start(action_event)
+            if conversation._flowpilot_runtime is not None
+            else None
+        )
+        started = time.monotonic()
         try:
             if should_enable_observability():
                 tool_name = extract_action_name(action_event)
@@ -1334,7 +2225,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 tool_name=tool.name,
                 tool_call_id=action_event.tool_call.id,
             )
-            return [error_event]
+            events: list[Event] = [error_event]
+            if conversation._flowpilot_runtime is not None:
+                conversation._flowpilot_runtime.tool_terminal(
+                    action_event,
+                    token=telemetry_token,
+                    started=started,
+                    error=e,
+                )
+            return events
+        except BaseException as exc:
+            if conversation._flowpilot_runtime is not None:
+                conversation._flowpilot_runtime.tool_terminal(
+                    action_event,
+                    token=telemetry_token,
+                    started=started,
+                    error=exc,
+                    cancelled=isinstance(exc, asyncio.CancelledError),
+                )
+            raise
 
         obs_event = ObservationEvent(
             observation=observation,
@@ -1342,7 +2251,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
         )
+        if conversation._flowpilot_runtime is not None:
+            conversation._flowpilot_runtime.tool_terminal(
+                action_event,
+                token=telemetry_token,
+                started=started,
+                events=[obs_event],
+            )
         return [obs_event]
+
+    @staticmethod
+    def _report_flowpilot_blocked_actions(
+        conversation: LocalConversation, batch: _ActionBatch
+    ) -> None:
+        runtime = conversation._flowpilot_runtime
+        if runtime is None:
+            return
+        for action_event in batch.action_events:
+            if action_event.id in batch.blocked_reasons:
+                runtime.tool_blocked(action_event)
 
     def _maybe_emit_vllm_tokens(
         self, llm_response: LLMResponse, on_event: ConversationCallbackType

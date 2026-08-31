@@ -222,6 +222,42 @@ class EventLog(EventsListBase):
             )
             raise
 
+    def append_batch(self, events: list[Event]) -> None:
+        """Prepare a batch of events while holding one log lock.
+
+        The caller commits the conversation HEAD separately.  Existing event
+        IDs are accepted only when their serialized contents are identical;
+        this makes recovery idempotent and prevents a retry from silently
+        replacing an authoritative event.
+        """
+        if not events:
+            return
+        with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
+            disk_length = self._count_events_on_disk()
+            if disk_length > self._length:
+                self._sync_from_disk(disk_length)
+            write_guard = (
+                nullcontext() if self._write_guard is None else self._write_guard()
+            )
+            with write_guard:
+                for event in events:
+                    event_id = event.id
+                    payload = event.model_dump_json(exclude_none=True)
+                    existing_idx = self._id_to_idx.get(event_id)
+                    if existing_idx is not None:
+                        existing = self._fs.read(self._path(existing_idx))
+                        if existing != payload:
+                            raise ValueError(
+                                f"Event with ID '{event_id}' has conflicting contents"
+                            )
+                        continue
+                    target_path = self._path(self._length, event_id=event_id)
+                    self._fs.write(target_path, payload)
+                    self._idx_to_id[self._length] = event_id
+                    self._id_to_idx[event_id] = self._length
+                    self._event_cache[self._length] = event
+                    self._length += 1
+
     def _count_events_on_disk(self) -> int:
         """Count event files on disk."""
         try:

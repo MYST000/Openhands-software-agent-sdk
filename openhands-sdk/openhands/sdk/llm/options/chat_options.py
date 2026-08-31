@@ -115,5 +115,13 @@ def select_chat_options(
             **existing,
             "x-litellm-session-id": ctx.session_id,
         }
+    if (
+        ctx.flowpilot_headers
+        and ctx.flowpilot_gateway_url
+        and llm.base_url
+        and llm.base_url.rstrip("/") == ctx.flowpilot_gateway_url.rstrip("/")
+    ):
+        existing = out.get("extra_headers") or {}
+        out["extra_headers"] = {**existing, **ctx.flowpilot_headers}
 
     return out

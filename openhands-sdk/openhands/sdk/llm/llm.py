@@ -203,6 +203,8 @@ class LLMCallContext:
 
     prompt_cache_key: str | None = None
     session_id: str | None = None
+    flowpilot_headers: dict[str, str] | None = None
+    flowpilot_gateway_url: str | None = None
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -1447,6 +1449,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             return self._handle_error(
@@ -1536,6 +1539,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # Fallback is synchronous; cast the token callback since the
@@ -1685,6 +1689,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             return self._handle_error(
@@ -1829,6 +1834,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             _fb_token = cast("TokenCallbackType | None", on_token)

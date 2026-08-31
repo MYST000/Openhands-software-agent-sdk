@@ -15,6 +15,8 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
 
+from browser_use.browser.profile import ProxySettings
+
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
@@ -99,6 +101,25 @@ MAX_CONSECUTIVE_FAILURES: Final[int] = 3
 # Shorter timeout used after a failure to avoid long cascading waits
 # against a dead browser.
 DEGRADED_TIMEOUT_SECONDS: Final[float] = 30.0
+DEFAULT_BROWSER_PROXY: Final[str] = "http://127.0.0.1:11001"
+DEFAULT_BROWSER_PROXY_BYPASS: Final[str] = "localhost,127.0.0.1,::1"
+
+
+def _browser_proxy_from_env() -> ProxySettings | None:
+    # Keep the BrowserTool call surface unchanged: Chromium uses this proxy by
+    # default even when OpenHands was started without shell proxy variables.
+    # OH_BROWSER_PROXY remains an optional override for tests/deployments.
+    if "OH_BROWSER_PROXY" not in os.environ:
+        return ProxySettings(
+            server=DEFAULT_BROWSER_PROXY,
+            bypass=DEFAULT_BROWSER_PROXY_BYPASS,
+        )
+
+    proxy_url = os.getenv("OH_BROWSER_PROXY", "").strip()
+    if not proxy_url:
+        return None
+    bypass = os.getenv("OH_BROWSER_PROXY_BYPASS", DEFAULT_BROWSER_PROXY_BYPASS).strip()
+    return ProxySettings(server=proxy_url, bypass=bypass or None)
 
 
 def _current_platform(platform: str | None = None) -> str:
@@ -386,6 +407,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
+                **(
+                    {"proxy": browser_proxy}
+                    if (browser_proxy := _browser_proxy_from_env()) is not None
+                    else {}
+                ),
                 **config,
             }
 
@@ -711,20 +737,31 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         """Close the browser executor and cleanup resources."""
         with self._close_lock:
             shared_close_lock_acquired = self._detach_shared_executor_for_close()
-            if self._cleanup_initiated:
+            if getattr(self, "_cleanup_initiated", False):
                 if shared_close_lock_acquired:
                     self._release_shared_executor_creation_lock()
                 return
             self._cleanup_initiated = True
+            async_executor = getattr(self, "_async_executor", None)
+            if async_executor is None:
+                if shared_close_lock_acquired:
+                    self._release_shared_executor_creation_lock()
+                return
             try:
+                # A timeout or a test double may interrupt construction before
+                # ``init_logic`` creates ``_server``.  Do not lazily start an
+                # AnyIO portal from ``__del__`` for such a partial object: two
+                # concurrent finalizers can deadlock while importing AnyIO.
+                if not hasattr(self, "_server"):
+                    return
                 # Run cleanup in the async executor with a shorter timeout
-                self._async_executor.run_async(self.cleanup, timeout=30.0)
+                async_executor.run_async(self.cleanup, timeout=30.0)
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
                 try:
                     # Always close the async executor
-                    self._async_executor.close()
+                    async_executor.close()
                 finally:
                     if shared_close_lock_acquired:
                         self._release_shared_executor_creation_lock()
