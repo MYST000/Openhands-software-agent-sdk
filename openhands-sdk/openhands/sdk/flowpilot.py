@@ -41,15 +41,17 @@ class FlowPilotConfig:
     enabled: bool = False
     gateway_url: str = ""
     api_key: str = ""
-    tenant_id: str = ""
     job_id: str = ""
     line_id: str = ""
+    parent_conversation_id: str | None = None
+    task_id: str | None = None
+    agent_id: str | None = None
+    parent_action_id: str | None = None
     timeout: float = 2.0
     include_auxiliary_llms: bool = False
     exact_reuse_enabled: bool = False
     semantic_reuse_enabled: bool = False
     reusable_web_tools: tuple[str, ...] = ()
-    auth_scope: str = "anonymous"
     locale: str = "und"
     language: str = "und"
     region: str = "global"
@@ -78,9 +80,9 @@ class FlowPilotConfig:
     @property
     def reuse_protocol_version(self) -> str:
         return (
-            "flowpilot-phase3-reuse-v1"
+            "flowpilot-phase3-reuse-v2"
             if self.semantic_reuse_enabled
-            else "flowpilot-phase1-reuse-v1"
+            else "flowpilot-phase1-reuse-v2"
         )
 
     def validate(self, *, tool_concurrency_limit: int) -> None:
@@ -93,7 +95,7 @@ class FlowPilotConfig:
             )
         missing = [
             name
-            for name in ("gateway_url", "api_key", "tenant_id", "job_id", "line_id")
+            for name in ("gateway_url", "api_key", "job_id", "line_id")
             if not getattr(self, name)
         ]
         if missing:
@@ -133,7 +135,6 @@ class FlowPilotConfig:
 
 @dataclass(frozen=True, slots=True)
 class FlowPilotRequestIdentity:
-    tenant_id: str
     job_id: str
     line_id: str
     tail_request_id: str
@@ -149,8 +150,7 @@ class FlowPilotRequestIdentity:
     def headers(self, api_key: str) -> dict[str, str]:
         headers = {
             "x-flowpilot-api-key": api_key,
-            "x-flowpilot-protocol-version": "flowpilot-phase0-v1",
-            "x-flowpilot-tenant-id": self.tenant_id,
+            "x-flowpilot-protocol-version": "flowpilot-phase0-v2",
             "x-flowpilot-job-id": self.job_id,
             "x-flowpilot-line-id": self.line_id,
             "x-flowpilot-tail-request-id": self.tail_request_id,
@@ -169,7 +169,6 @@ class FlowPilotRequestIdentity:
 
 @dataclass(frozen=True, slots=True)
 class FlowPilotDCSReference:
-    tenant_id: str
     job_id: str
     line_id: str
     context_epoch: int
@@ -179,7 +178,7 @@ class FlowPilotDCSReference:
 
     def payload(self) -> dict[str, Any]:
         return {
-            "protocol_version": "flowpilot-phase2-dcs-v1",
+            "protocol_version": "flowpilot-phase2-dcs-v2",
             **asdict(self),
         }
 
@@ -213,6 +212,8 @@ class FlowPilotRuntime:
     _file_store: FileStore | None = None
     _sync_response: dict[str, Any] | None = None
     _sync_reference: FlowPilotDCSReference | None = None
+    _dependency_version: int = 0
+    _waiting_on_lines: set[str] = field(default_factory=set)
 
     _RECOVERY_DIR = "flowpilot/recovery"
 
@@ -230,7 +231,6 @@ class FlowPilotRuntime:
         material = ":".join(
             (
                 self.config.api_key,
-                self.config.tenant_id,
                 self.config.job_id,
                 self.config.line_id,
                 self.conversation_id,
@@ -338,7 +338,7 @@ class FlowPilotRuntime:
         }
         first_batch = serialized_batches[0]
         manifest = {
-            "protocol_version": "flowpilot-phase2-recovery-v1",
+            "protocol_version": "flowpilot-phase2-recovery-v2",
             "batch_id": batch_id,
             "event_ids": first_batch["event_ids"],
             "event_digests": first_batch["event_digests"],
@@ -496,7 +496,7 @@ class FlowPilotRuntime:
             ack = self._request_json(
                 "/flowpilot/v1/dcs/sync/ack",
                 {
-                    "protocol_version": "flowpilot-phase2-dcs-v1",
+                    "protocol_version": "flowpilot-phase2-dcs-v2",
                     "reference": reference.payload(),
                     "first_seq": first_seq,
                     "last_seq": last_seq,
@@ -511,7 +511,6 @@ class FlowPilotRuntime:
                 self._clear_recovery_manifest(manifest)
                 return
             reference = FlowPilotDCSReference(
-                tenant_id=reference.tenant_id,
                 job_id=reference.job_id,
                 line_id=reference.line_id,
                 context_epoch=reference.context_epoch,
@@ -573,7 +572,7 @@ class FlowPilotRuntime:
             ack = self._request_json(
                 "/flowpilot/v1/dcs/sync/ack",
                 {
-                    "protocol_version": "flowpilot-phase2-dcs-v1",
+                    "protocol_version": "flowpilot-phase2-dcs-v2",
                     "reference": reference.payload(),
                     "first_seq": response.get("first_seq"),
                     "last_seq": response.get("last_seq"),
@@ -589,7 +588,6 @@ class FlowPilotRuntime:
                 self._clear_recovery_manifest(manifest)
                 return
             reference = FlowPilotDCSReference(
-                tenant_id=reference.tenant_id,
                 job_id=reference.job_id,
                 line_id=reference.line_id,
                 context_epoch=reference.context_epoch,
@@ -616,7 +614,7 @@ class FlowPilotRuntime:
         """Register or resume the line before any LLM request."""
         self._post_control(
             "/flowpilot/v1/jobs",
-            {"tenant_id": self.config.tenant_id, "job_id": self.config.job_id},
+            {"job_id": self.config.job_id},
         )
         digest = context_digest or hashlib.sha256(b"[]").hexdigest()
         tail = self._find_authoritative_tail()
@@ -624,13 +622,17 @@ class FlowPilotRuntime:
             self._post_control(
                 "/flowpilot/v1/lines",
                 {
-                    "tenant_id": self.config.tenant_id,
                     "job_id": self.config.job_id,
                     "line_id": self.config.line_id,
                     "context_epoch": self.context_epoch,
                     "context_sequence": context_sequence,
                     "base_context_cursor": base_context_cursor,
                     "context_digest": digest,
+                    "conversation_id": self.conversation_id,
+                    "parent_conversation_id": self.config.parent_conversation_id,
+                    "task_id": self.config.task_id,
+                    "agent_id": self.config.agent_id,
+                    "parent_action_id": self.config.parent_action_id,
                 },
             )
         else:
@@ -661,7 +663,6 @@ class FlowPilotRuntime:
                 if not isinstance(lease_id, str):
                     raise ValueError("FlowPilot recovery lease ID is malformed")
                 self._dcs_reference = FlowPilotDCSReference(
-                    tenant_id=self.config.tenant_id,
                     job_id=self.config.job_id,
                     line_id=self.config.line_id,
                     context_epoch=self.context_epoch,
@@ -696,6 +697,31 @@ class FlowPilotRuntime:
                     "FlowPilot DCS state conflicts with the authoritative Agent history"
                 )
 
+    def report_dependency(
+        self, prerequisite_line_id: str, *, actual_wait: bool
+    ) -> None:
+        """Atomically report the lines this conversation is actually waiting on."""
+        with self._lock:
+            if actual_wait:
+                self._waiting_on_lines.add(prerequisite_line_id)
+            else:
+                self._waiting_on_lines.discard(prerequisite_line_id)
+            self._dependency_version += 1
+            version = self._dependency_version
+            prerequisites = tuple(sorted(self._waiting_on_lines))
+        self._request_json(
+            f"/flowpilot/v1/lines/{urllib.parse.quote(self.config.line_id, safe='')}"
+            "/dependencies",
+            {
+                "protocol_version": "flowpilot-phase0-v2",
+                "job_id": self.config.job_id,
+                "line_id": self.config.line_id,
+                "version": version,
+                "prerequisite_line_ids": prerequisites,
+            },
+            method="PUT",
+        )
+
     def begin_request(
         self,
         *,
@@ -705,7 +731,6 @@ class FlowPilotRuntime:
     ) -> FlowPilotRequestIdentity:
         with self._lock:
             identity = FlowPilotRequestIdentity(
-                tenant_id=self.config.tenant_id,
                 job_id=self.config.job_id,
                 line_id=self.config.line_id,
                 tail_request_id=str(uuid.uuid4()),
@@ -744,7 +769,6 @@ class FlowPilotRuntime:
         reference = self._require_dcs_reference()
         with self._lock:
             identity = FlowPilotRequestIdentity(
-                tenant_id=self.config.tenant_id,
                 job_id=self.config.job_id,
                 line_id=self.config.line_id,
                 tail_request_id=str(uuid.uuid4()),
@@ -788,11 +812,10 @@ class FlowPilotRuntime:
         lease_id = str(uuid.uuid4())
         policy_version = self._dcs_policy_version + 1
         policy_payload = {
-            "protocol_version": "flowpilot-phase2-dcs-v1",
+            "protocol_version": "flowpilot-phase2-dcs-v2",
             "policy_version": policy_version,
             "expected_policy_version": self._dcs_policy_version,
             "lease_id": lease_id,
-            "tenant_id": identity.tenant_id,
             "job_id": identity.job_id,
             "line_id": identity.line_id,
             "context_epoch": identity.context_epoch,
@@ -826,7 +849,6 @@ class FlowPilotRuntime:
             ):
                 raise
         reference = FlowPilotDCSReference(
-            tenant_id=identity.tenant_id,
             job_id=identity.job_id,
             line_id=identity.line_id,
             context_epoch=identity.context_epoch,
@@ -875,7 +897,6 @@ class FlowPilotRuntime:
                 f"FlowPilot active delegation reconciled to invalid state {state}"
             )
         updated = FlowPilotDCSReference(
-            tenant_id=reference.tenant_id,
             job_id=reference.job_id,
             line_id=reference.line_id,
             context_epoch=reference.context_epoch,
@@ -910,7 +931,7 @@ class FlowPilotRuntime:
         response = self._request_json(
             "/flowpilot/v1/dcs/deltas/append",
             {
-                "protocol_version": "flowpilot-phase2-dcs-v1",
+                "protocol_version": "flowpilot-phase2-dcs-v2",
                 "reference": reference.payload(),
                 "expected_last_seq": expected_last_seq,
                 "parent_llm_call_id": parent_llm_call_id,
@@ -922,7 +943,6 @@ class FlowPilotRuntime:
             method="POST",
         )
         updated = FlowPilotDCSReference(
-            tenant_id=reference.tenant_id,
             job_id=reference.job_id,
             line_id=reference.line_id,
             context_epoch=reference.context_epoch,
@@ -956,27 +976,24 @@ class FlowPilotRuntime:
         reference = self._require_dcs_reference()
         reuse_identity = self._reuse_identity(identity, action)
         reuse = {
-            "protocol_version": "flowpilot-phase1-reuse-v1",
+            "protocol_version": "flowpilot-phase1-reuse-v2",
             "identity": reuse_identity,
             "tool_name": action.tool_name,
             "arguments": _provider_tool_arguments(action),
             "scope": {
-                "tenant_id": self.config.tenant_id,
-                "auth_scope": self.config.auth_scope,
                 "locale": self.config.locale,
                 "language": self.config.language,
                 "region": self.config.region,
                 "safe_search_policy": self.config.safe_search_policy,
                 "time_sensitivity_class": self.config.time_sensitivity_class,
                 "data_source_constraints": list(self.config.data_source_constraints),
-                "public_scope": False,
             },
             "output_budget_bytes": self.config.reuse_output_budget_bytes,
         }
         decision = self._request_json(
             "/flowpilot/v1/dcs/reuse/resolve",
             {
-                "protocol_version": "flowpilot-phase2-dcs-v1",
+                "protocol_version": "flowpilot-phase2-dcs-v2",
                 "reuse": reuse,
                 "delegation": reference.payload(),
             },
@@ -994,7 +1011,7 @@ class FlowPilotRuntime:
                 decision = self._request_json(
                     "/flowpilot/v1/dcs/reuse/bindings/poll",
                     {
-                        "protocol_version": "flowpilot-phase2-dcs-v1",
+                        "protocol_version": "flowpilot-phase2-dcs-v2",
                         "binding_id": binding_id,
                         "reuse": reuse,
                         "delegation": reference.payload(),
@@ -1036,7 +1053,7 @@ class FlowPilotRuntime:
         response = self._request_json(
             "/flowpilot/v1/dcs/continuations",
             {
-                "protocol_version": "flowpilot-phase2-dcs-v1",
+                "protocol_version": "flowpilot-phase2-dcs-v2",
                 "reference": self._require_dcs_reference().payload(),
                 "parent_llm_call_id": parent_llm_call_id,
             },
@@ -1059,7 +1076,7 @@ class FlowPilotRuntime:
         """Apply every sync chunk locally, ACKing only after atomic application."""
         reference = self._require_dcs_reference()
         sync_payload = {
-            "protocol_version": "flowpilot-phase2-dcs-v1",
+            "protocol_version": "flowpilot-phase2-dcs-v2",
             "reference": reference.payload(),
             "barrier_reason": barrier_reason,
             "parent_llm_call_id": parent_llm_call_id,
@@ -1094,7 +1111,7 @@ class FlowPilotRuntime:
                 self._read_recovery_manifest(), cursor, context_digest
             )
             ack_payload = {
-                "protocol_version": "flowpilot-phase2-dcs-v1",
+                "protocol_version": "flowpilot-phase2-dcs-v2",
                 "reference": reference.payload(),
                 "first_seq": response.get("first_seq"),
                 "last_seq": response.get("last_seq"),
@@ -1112,7 +1129,6 @@ class FlowPilotRuntime:
                 self._sync_reference = None
                 return
             reference = FlowPilotDCSReference(
-                tenant_id=reference.tenant_id,
                 job_id=reference.job_id,
                 line_id=reference.line_id,
                 context_epoch=reference.context_epoch,
@@ -1140,7 +1156,7 @@ class FlowPilotRuntime:
         """Async sync that keeps local event application on the caller's thread."""
         reference = self._require_dcs_reference()
         sync_payload = {
-            "protocol_version": "flowpilot-phase2-dcs-v1",
+            "protocol_version": "flowpilot-phase2-dcs-v2",
             "reference": reference.payload(),
             "barrier_reason": barrier_reason,
             "parent_llm_call_id": parent_llm_call_id,
@@ -1180,7 +1196,7 @@ class FlowPilotRuntime:
                 self._request_json,
                 "/flowpilot/v1/dcs/sync/ack",
                 {
-                    "protocol_version": "flowpilot-phase2-dcs-v1",
+                    "protocol_version": "flowpilot-phase2-dcs-v2",
                     "reference": reference.payload(),
                     "first_seq": response.get("first_seq"),
                     "last_seq": response.get("last_seq"),
@@ -1197,7 +1213,6 @@ class FlowPilotRuntime:
                 self._sync_reference = None
                 return
             reference = FlowPilotDCSReference(
-                tenant_id=reference.tenant_id,
                 job_id=reference.job_id,
                 line_id=reference.line_id,
                 context_epoch=reference.context_epoch,
@@ -1229,8 +1244,7 @@ class FlowPilotRuntime:
         return self._request_json(
             "/flowpilot/v1/dcs/reconcile",
             {
-                "protocol_version": "flowpilot-phase2-dcs-v1",
-                "tenant_id": self.config.tenant_id,
+                "protocol_version": "flowpilot-phase2-dcs-v2",
                 "job_id": self.config.job_id,
                 "line_id": self.config.line_id,
                 "context_epoch": self.context_epoch,
@@ -1257,7 +1271,7 @@ class FlowPilotRuntime:
             response = self._request_json(
                 "/flowpilot/v1/dcs/sync",
                 {
-                    "protocol_version": "flowpilot-phase2-dcs-v1",
+                    "protocol_version": "flowpilot-phase2-dcs-v2",
                     "reference": reference.payload(),
                     "barrier_reason": "failure",
                     "parent_llm_call_id": None,
@@ -1377,15 +1391,12 @@ class FlowPilotRuntime:
             "tool_name": action.tool_name,
             "arguments": _provider_tool_arguments(action),
             "scope": {
-                "tenant_id": self.config.tenant_id,
-                "auth_scope": self.config.auth_scope,
                 "locale": self.config.locale,
                 "language": self.config.language,
                 "region": self.config.region,
                 "safe_search_policy": self.config.safe_search_policy,
                 "time_sensitivity_class": self.config.time_sensitivity_class,
                 "data_source_constraints": list(self.config.data_source_constraints),
-                "public_scope": False,
             },
             "output_budget_bytes": self.config.reuse_output_budget_bytes,
         }
@@ -1555,8 +1566,12 @@ class FlowPilotRuntime:
         attempt: int,
     ) -> dict[str, Any]:
         common: dict[str, Any] = {
-            "protocol_version": "flowpilot-phase0-v1",
-            **asdict(identity),
+            "protocol_version": "flowpilot-phase0-v2",
+            "job_id": identity.job_id,
+            "line_id": identity.line_id,
+            "context_epoch": identity.context_epoch,
+            "tail_request_id": identity.tail_request_id,
+            "llm_call_id": identity.llm_call_id,
             "action_id": action.id,
             "tool_call_id": action.tool_call_id,
             "tool_name": action.tool_name,
@@ -1568,7 +1583,6 @@ class FlowPilotRuntime:
             ),
             "execution_attempt": attempt,
         }
-        common.pop("tail_version", None)
         return common
 
     def _post_tool_event(self, payload: dict[str, Any]) -> None:
@@ -1589,7 +1603,7 @@ class FlowPilotRuntime:
             logger.warning("FlowPilot tool telemetry failed", exc_info=True)
 
     def _post_control(self, path: str, payload: dict[str, Any]) -> None:
-        payload["protocol_version"] = "flowpilot-phase0-v1"
+        payload["protocol_version"] = "flowpilot-phase0-v2"
         request = urllib.request.Request(
             f"{self.config.control_base_url}{path}",
             data=json.dumps(payload, separators=(",", ":")).encode(),
@@ -1698,7 +1712,6 @@ class FlowPilotRuntime:
         identity: FlowPilotRequestIdentity, action: ActionEvent
     ) -> dict[str, str]:
         return {
-            "tenant_id": identity.tenant_id,
             "job_id": identity.job_id,
             "line_id": identity.line_id,
             "tail_request_id": identity.tail_request_id,
@@ -1739,11 +1752,10 @@ class FlowPilotRuntime:
         return tail
 
     def _find_authoritative_tail(self) -> dict[str, Any] | None:
-        query = urllib.parse.urlencode({"tenant_id": self.config.tenant_id})
         request = urllib.request.Request(
             (
                 f"{self.config.control_base_url}/flowpilot/v1/jobs/"
-                f"{urllib.parse.quote(self.config.job_id, safe='')}/frontier?{query}"
+                f"{urllib.parse.quote(self.config.job_id, safe='')}/frontier"
             ),
             headers={"x-flowpilot-api-key": self.config.api_key},
             method="GET",

@@ -283,7 +283,6 @@ def _config(**updates) -> FlowPilotConfig:
         "enabled": True,
         "gateway_url": "http://flowpilot:9000",
         "api_key": "secret",
-        "tenant_id": "tenant-1",
         "job_id": "job-1",
         "line_id": "line-1",
     }
@@ -360,6 +359,54 @@ def test_runtime_registers_job_and_line_without_prompt_content() -> None:
     serialized = json.dumps(requests)
     assert "prompt" not in serialized
     assert "secret" not in serialized
+
+
+def test_runtime_registers_explicit_parent_child_metadata_and_dependencies() -> None:
+    requests: list[tuple[str, dict]] = []
+    dependency_requests: list[tuple[str, dict]] = []
+    runtime = FlowPilotRuntime(
+        _config(
+            parent_conversation_id="conversation-root",
+            task_id="task-7",
+            agent_id="agent-7",
+            parent_action_id="action-parent-7",
+        ),
+        "conversation-child",
+    )
+    with (
+        patch.object(
+            FlowPilotRuntime,
+            "_post_control",
+            side_effect=lambda path, payload: requests.append((path, payload)),
+        ),
+        patch.object(FlowPilotRuntime, "_find_authoritative_tail", return_value=None),
+        patch.object(
+            FlowPilotRuntime,
+            "_request_json",
+            side_effect=lambda path, payload, **_kwargs: (
+                dependency_requests.append((path, payload)) or {}
+            ),
+        ),
+    ):
+        runtime.register()
+        runtime.report_dependency("line-parent", actual_wait=False)
+        runtime.report_dependency("line-parent", actual_wait=True)
+
+    line_payload = next(
+        payload for path, payload in requests if path.endswith("/lines")
+    )
+    assert line_payload["conversation_id"] == "conversation-child"
+    assert line_payload["parent_conversation_id"] == "conversation-root"
+    assert line_payload["task_id"] == "task-7"
+    assert line_payload["agent_id"] == "agent-7"
+    assert line_payload["parent_action_id"] == "action-parent-7"
+    dependency_payloads = [
+        payload
+        for path, payload in dependency_requests
+        if path.endswith("/dependencies")
+    ]
+    assert dependency_payloads[0]["prerequisite_line_ids"] == ()
+    assert dependency_payloads[1]["prerequisite_line_ids"] == ("line-parent",)
 
 
 def test_runtime_register_recovers_authoritative_tail_version() -> None:
@@ -450,6 +497,22 @@ def test_tool_telemetry_is_best_effort_and_keeps_identity() -> None:
         runtime.tool_terminal(action, token=token, started=time.monotonic(), events=[])
     assert [item["event_kind"] for item in captured] == ["start", "finish"]
     assert {item["tool_call_id"] for item in captured} == {"tool-call-1"}
+    assert set(captured[0]) == {
+        "protocol_version",
+        "job_id",
+        "line_id",
+        "context_epoch",
+        "tail_request_id",
+        "llm_call_id",
+        "action_id",
+        "tool_call_id",
+        "tool_name",
+        "tool_class",
+        "execution_attempt",
+        "event_id",
+        "sequence",
+        "event_kind",
+    }
 
     with patch("urllib.request.urlopen", side_effect=OSError("offline")):
         runtime._post_tool_event({"event_kind": "start"})
@@ -647,10 +710,10 @@ def test_semantic_opt_in_uses_phase3_and_progress_is_best_effort() -> None:
         runtime.tool_start(action)
 
     assert requests[0][1] is not None
-    assert requests[0][1]["protocol_version"] == "flowpilot-phase3-reuse-v1"
+    assert requests[0][1]["protocol_version"] == "flowpilot-phase3-reuse-v2"
     assert requests[1][0].endswith("/bindings/binding-1/progress")
     assert requests[1][1] is not None
-    assert requests[1][1]["protocol_version"] == "flowpilot-phase3-reuse-v1"
+    assert requests[1][1]["protocol_version"] == "flowpilot-phase3-reuse-v2"
 
 
 def test_follower_cancellation_releases_waiting_binding() -> None:
@@ -677,7 +740,7 @@ def test_follower_cancellation_releases_waiting_binding() -> None:
         (
             "/flowpilot/v1/reuse/bindings/binding-1/cancel",
             {
-                "protocol_version": "flowpilot-phase1-reuse-v1",
+                "protocol_version": "flowpilot-phase1-reuse-v2",
                 "binding_id": "binding-1",
                 "identity": identity,
             },
@@ -1064,7 +1127,7 @@ def test_phase2_deferred_reuse_never_injects_an_observation() -> None:
     }
     assert (
         request_json.call_args_list[1].args[1]["reuse"]["protocol_version"]
-        == "flowpilot-phase1-reuse-v1"
+        == "flowpilot-phase1-reuse-v2"
     )
 
 
