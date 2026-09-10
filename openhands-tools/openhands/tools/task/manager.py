@@ -217,6 +217,15 @@ class TaskManager:
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
                 delete_on_close=True,
+                flowpilot=(
+                    self.parent_conversation._flowpilot.child(
+                        line_id=f"line-{resume}",
+                        parent_conversation_id=str(self.parent_conversation.state.id),
+                        spawn_id=resume,
+                    )
+                    if self.parent_conversation._flowpilot.enabled
+                    else None
+                ),
             )
 
             self._set_confirmation_policy(
@@ -313,6 +322,15 @@ class TaskManager:
             hook_config=hook_config,
             delete_on_close=True,
             prompt_cache_key=str(parent.state.id),
+            flowpilot=(
+                parent._flowpilot.child(
+                    line_id=f"line-{task_id}",
+                    parent_conversation_id=str(parent.state.id),
+                    spawn_id=task_id,
+                )
+                if parent._flowpilot.enabled
+                else None
+            ),
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:

@@ -1,6 +1,7 @@
 """Implementation of delegate tool executor."""
 
 import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -186,6 +187,7 @@ class DelegateExecutor(ToolExecutor):
                 sub_agent_llm.reset_metrics()
 
                 worker_agent = factory.factory_func(sub_agent_llm)
+                child_conversation_id = uuid.uuid4()
 
                 # ensuring that the sub-agent LLM has stream deactivated
                 worker_agent = worker_agent.model_copy(
@@ -220,7 +222,14 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
+                    "conversation_id": child_conversation_id,
                 }
+                if parent_conversation._flowpilot.enabled:
+                    conv_kwargs["flowpilot"] = parent_conversation._flowpilot.child(
+                        line_id=f"line-{agent_id}",
+                        parent_conversation_id=str(parent_conversation.state.id),
+                        spawn_id=str(child_conversation_id),
+                    )
 
                 if factory.definition.max_iteration_per_run is not None:
                     conv_kwargs["max_iteration_per_run"] = (

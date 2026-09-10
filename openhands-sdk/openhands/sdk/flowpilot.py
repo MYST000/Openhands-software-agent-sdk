@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -43,6 +43,11 @@ class FlowPilotConfig:
     api_key: str = ""
     job_id: str = ""
     line_id: str = ""
+    deployment_id: str | None = None
+    namespace_id: str | None = None
+    root_conversation_id: str | None = None
+    parent_line_id: str | None = None
+    spawn_id: str | None = None
     parent_conversation_id: str | None = None
     task_id: str | None = None
     agent_id: str | None = None
@@ -77,6 +82,17 @@ class FlowPilotConfig:
     def llm_base_url(self) -> str:
         return f"{self.control_base_url}/v1"
 
+    def child(
+        self, *, line_id: str, parent_conversation_id: str, spawn_id: str
+    ) -> FlowPilotConfig:
+        return replace(
+            self,
+            line_id=line_id,
+            parent_conversation_id=parent_conversation_id,
+            parent_line_id=self.line_id,
+            spawn_id=spawn_id,
+        )
+
     @property
     def reuse_protocol_version(self) -> str:
         return (
@@ -102,6 +118,8 @@ class FlowPilotConfig:
             raise ValueError(
                 f"FlowPilot configuration is missing: {', '.join(missing)}"
             )
+        if self.parent_line_id is not None and not self.parent_conversation_id:
+            raise ValueError("parent_line_id requires parent_conversation_id")
         if self.timeout <= 0:
             raise ValueError("FlowPilot timeout must be positive")
         if self.exact_reuse_enabled and not self.reusable_web_tools:
@@ -138,12 +156,20 @@ class FlowPilotRequestIdentity:
     job_id: str
     line_id: str
     tail_request_id: str
+    request_id: str
     llm_call_id: str
+    attempt: int
     tail_version: int
     context_epoch: int
     context_sequence: int
     base_context_cursor: str
     context_digest: str
+    conversation_id: str | None = None
+    parent_conversation_id: str | None = None
+    parent_line_id: str | None = None
+    spawn_id: str | None = None
+    deployment_id: str | None = None
+    namespace_id: str | None = None
     origin: Literal["agent", "scheduler_delegated"] = "agent"
     delegation_lease_id: str | None = None
 
@@ -154,6 +180,8 @@ class FlowPilotRequestIdentity:
             "x-flowpilot-job-id": self.job_id,
             "x-flowpilot-line-id": self.line_id,
             "x-flowpilot-tail-request-id": self.tail_request_id,
+            "x-flowpilot-request-id": self.request_id,
+            "x-flowpilot-request-attempt": str(self.attempt),
             "x-flowpilot-llm-call-id": self.llm_call_id,
             "x-flowpilot-tail-version": str(self.tail_version),
             "x-flowpilot-context-epoch": str(self.context_epoch),
@@ -162,6 +190,18 @@ class FlowPilotRequestIdentity:
             "x-flowpilot-context-digest": self.context_digest,
             "x-flowpilot-request-origin": self.origin,
         }
+        if self.deployment_id is not None:
+            headers["x-flowpilot-deployment-id"] = self.deployment_id
+        if self.namespace_id is not None:
+            headers["x-flowpilot-namespace-id"] = self.namespace_id
+        for name, value in (
+            ("x-flowpilot-conversation-id", self.conversation_id),
+            ("x-flowpilot-parent-conversation-id", self.parent_conversation_id),
+            ("x-flowpilot-parent-line-id", self.parent_line_id),
+            ("x-flowpilot-spawn-id", self.spawn_id),
+        ):
+            if value is not None:
+                headers[name] = value
         if self.delegation_lease_id is not None:
             headers["x-flowpilot-delegation-lease-id"] = self.delegation_lease_id
         return headers
@@ -193,6 +233,7 @@ class FlowPilotRuntime:
     context_epoch: int = 1
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _active_identity: FlowPilotRequestIdentity | None = None
+    _transport_attempts: int = 0
     _tool_identity: FlowPilotRequestIdentity | None = None
     _attempts: dict[str, int] = field(default_factory=dict)
     _active_tools: dict[str, tuple[FlowPilotRequestIdentity, int, float]] = field(
@@ -614,28 +655,45 @@ class FlowPilotRuntime:
         """Register or resume the line before any LLM request."""
         self._post_control(
             "/flowpilot/v1/jobs",
-            {"job_id": self.config.job_id},
+            {
+                "job_id": self.config.job_id,
+                "root_conversation_id": self.config.root_conversation_id,
+                "deployment_id": self.config.deployment_id,
+                "namespace_id": self.config.namespace_id,
+            },
         )
         digest = context_digest or hashlib.sha256(b"[]").hexdigest()
+        line_payload = {
+            "job_id": self.config.job_id,
+            "line_id": self.config.line_id,
+            "context_epoch": self.context_epoch,
+            "context_sequence": context_sequence,
+            "base_context_cursor": base_context_cursor,
+            "context_digest": digest,
+            "conversation_id": self.conversation_id,
+            "parent_conversation_id": self.config.parent_conversation_id,
+            "parent_line_id": self.config.parent_line_id,
+            "spawn_id": self.config.spawn_id,
+            "task_id": self.config.task_id,
+            "agent_id": self.config.agent_id,
+            "parent_action_id": self.config.parent_action_id,
+        }
         tail = self._find_authoritative_tail()
         if tail is None:
-            self._post_control(
-                "/flowpilot/v1/lines",
-                {
-                    "job_id": self.config.job_id,
-                    "line_id": self.config.line_id,
-                    "context_epoch": self.context_epoch,
-                    "context_sequence": context_sequence,
-                    "base_context_cursor": base_context_cursor,
-                    "context_digest": digest,
-                    "conversation_id": self.conversation_id,
-                    "parent_conversation_id": self.config.parent_conversation_id,
-                    "task_id": self.config.task_id,
-                    "agent_id": self.config.agent_id,
-                    "parent_action_id": self.config.parent_action_id,
-                },
-            )
+            self._post_control("/flowpilot/v1/lines", line_payload)
         else:
+            for field_name in (
+                "conversation_id",
+                "parent_conversation_id",
+                "parent_line_id",
+                "spawn_id",
+            ):
+                registered = tail.get(field_name)
+                requested = line_payload.get(field_name)
+                if registered is not None and registered != requested:
+                    raise RuntimeError(
+                        f"FlowPilot line identity mismatch: {field_name}"
+                    )
             phase = _tail_phase(tail)
             version = tail.get("version")
             if phase not in {"EMPTY", "READY"} or not isinstance(version, int):
@@ -734,15 +792,40 @@ class FlowPilotRuntime:
                 job_id=self.config.job_id,
                 line_id=self.config.line_id,
                 tail_request_id=str(uuid.uuid4()),
+                request_id=str(uuid.uuid4()),
                 llm_call_id=str(uuid.uuid4()),
+                attempt=1,
                 tail_version=self.tail_version,
                 context_epoch=self.context_epoch,
                 context_sequence=context_sequence,
                 base_context_cursor=base_context_cursor,
                 context_digest=context_digest,
+                conversation_id=self.conversation_id,
+                parent_conversation_id=self.config.parent_conversation_id,
+                parent_line_id=self.config.parent_line_id,
+                spawn_id=self.config.spawn_id,
+                deployment_id=self.config.deployment_id,
+                namespace_id=self.config.namespace_id,
             )
             self._active_identity = identity
+            self._transport_attempts = 0
             return identity
+
+    def prepare_attempt(self) -> dict[str, str]:
+        """Bind one provider transport invocation to the logical request."""
+        with self._lock:
+            identity = self._active_identity
+            if identity is None:
+                raise RuntimeError("FlowPilot has no active logical request")
+            if self._transport_attempts:
+                identity = replace(
+                    identity,
+                    attempt=identity.attempt + 1,
+                    llm_call_id=str(uuid.uuid4()),
+                )
+                self._active_identity = identity
+            self._transport_attempts += 1
+            return identity.headers(self.config.api_key)
 
     def commit_request(self, identity: FlowPilotRequestIdentity) -> None:
         tail = self._fetch_authoritative_tail()
@@ -772,16 +855,25 @@ class FlowPilotRuntime:
                 job_id=self.config.job_id,
                 line_id=self.config.line_id,
                 tail_request_id=str(uuid.uuid4()),
+                request_id=str(uuid.uuid4()),
                 llm_call_id=str(uuid.uuid4()),
+                attempt=1,
                 tail_version=self.tail_version,
                 context_epoch=reference.context_epoch,
                 context_sequence=self._dcs_base_context_sequence + self._dcs_last_seq,
                 base_context_cursor=reference.base_context_cursor,
                 context_digest=reference.delta_digest,
+                conversation_id=self.conversation_id,
+                parent_conversation_id=self.config.parent_conversation_id,
+                parent_line_id=self.config.parent_line_id,
+                spawn_id=self.config.spawn_id,
+                deployment_id=self.config.deployment_id,
+                namespace_id=self.config.namespace_id,
                 origin="scheduler_delegated",
                 delegation_lease_id=reference.lease_id,
             )
             self._active_identity = identity
+            self._transport_attempts = 0
             return identity
 
     def abort_request(self, identity: FlowPilotRequestIdentity) -> None:
@@ -1571,7 +1663,10 @@ class FlowPilotRuntime:
             "line_id": identity.line_id,
             "context_epoch": identity.context_epoch,
             "tail_request_id": identity.tail_request_id,
+            "request_id": identity.request_id,
             "llm_call_id": identity.llm_call_id,
+            "attempt": identity.attempt,
+            "conversation_id": identity.conversation_id,
             "action_id": action.id,
             "tool_call_id": action.tool_call_id,
             "tool_name": action.tool_name,

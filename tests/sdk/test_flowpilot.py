@@ -299,6 +299,32 @@ def test_disabled_configuration_preserves_existing_behavior() -> None:
     )
 
 
+def test_identity_attempts_keep_logical_request_and_rotate_transport_call() -> None:
+    runtime = FlowPilotRuntime(_config(), "conversation-1")
+    identity = runtime.begin_request(
+        context_sequence=0, base_context_cursor="root", context_digest="a" * 64
+    )
+    first = runtime.prepare_attempt()
+    second = runtime.prepare_attempt()
+    assert first["x-flowpilot-request-id"] == second["x-flowpilot-request-id"]
+    assert first["x-flowpilot-llm-call-id"] != second["x-flowpilot-llm-call-id"]
+    assert first["x-flowpilot-request-attempt"] == "1"
+    assert second["x-flowpilot-request-attempt"] == "2"
+    assert identity.request_id == first["x-flowpilot-request-id"]
+
+
+def test_child_config_preserves_root_job_and_records_parent_line() -> None:
+    config = _config()
+    child = config.child(
+        line_id="line-child",
+        parent_conversation_id="conversation-root",
+        spawn_id="spawn-1",
+    )
+    assert child.job_id == config.job_id
+    assert child.parent_line_id == config.line_id
+    assert child.parent_conversation_id == "conversation-root"
+
+
 def test_enabled_configuration_requires_serial_tool_execution() -> None:
     _config().validate(tool_concurrency_limit=1)
     with pytest.raises(ValueError, match="tool_concurrency_limit == 1"):
@@ -503,7 +529,10 @@ def test_tool_telemetry_is_best_effort_and_keeps_identity() -> None:
         "line_id",
         "context_epoch",
         "tail_request_id",
+        "request_id",
         "llm_call_id",
+        "attempt",
+        "conversation_id",
         "action_id",
         "tool_call_id",
         "tool_name",

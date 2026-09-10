@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final, TypeGuard, cast
 
@@ -272,6 +273,15 @@ class LocalConversation(BaseConversation):
         # Create-or-resume: factory inspects BASE_STATE to decide.
         desired_id = conversation_id or uuid.uuid4()
         self._flowpilot = flowpilot or FlowPilotConfig()
+        if self._flowpilot.enabled:
+            conversation_key = str(desired_id)
+            self._flowpilot = replace(
+                self._flowpilot,
+                job_id=self._flowpilot.job_id or f"job-{conversation_key}",
+                line_id=self._flowpilot.line_id or f"line-{conversation_key}",
+                root_conversation_id=self._flowpilot.root_conversation_id
+                or conversation_key,
+            )
         self._flowpilot.validate(tool_concurrency_limit=agent.tool_concurrency_limit)
         if self._flowpilot.enabled:
             agent = agent.model_copy(
@@ -1428,6 +1438,11 @@ class LocalConversation(BaseConversation):
             prompt_cache_key=self._prompt_cache_key or conv_id,
             session_id=conv_id,
             flowpilot_headers=headers,
+            flowpilot_prepare_attempt=(
+                self._flowpilot_runtime.prepare_attempt
+                if self._flowpilot_runtime is not None
+                else None
+            ),
             flowpilot_gateway_url=(
                 self._flowpilot.llm_base_url if self._flowpilot.enabled else None
             ),
@@ -1443,6 +1458,7 @@ class LocalConversation(BaseConversation):
             prompt_cache_key=self._prompt_cache_key or conv_id,
             session_id=conv_id,
             flowpilot_headers=identity.headers(self._flowpilot.api_key),
+            flowpilot_prepare_attempt=self._flowpilot_runtime.prepare_attempt,
             flowpilot_gateway_url=self._flowpilot.llm_base_url,
         )
 

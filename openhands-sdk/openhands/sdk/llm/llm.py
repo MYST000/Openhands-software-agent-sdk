@@ -205,6 +205,7 @@ class LLMCallContext:
     session_id: str | None = None
     flowpilot_headers: dict[str, str] | None = None
     flowpilot_gateway_url: str | None = None
+    flowpilot_prepare_attempt: Callable[[], dict[str, str]] | None = None
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -1417,6 +1418,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
+            if (
+                call_context is not None
+                and call_context.flowpilot_prepare_attempt
+                and call_context.flowpilot_gateway_url is not None
+                and self.base_url is not None
+                and self.base_url.rstrip("/")
+                == call_context.flowpilot_gateway_url.rstrip("/")
+            ):
+                final_kwargs["extra_headers"] = {
+                    **(final_kwargs.get("extra_headers") or {}),
+                    **call_context.flowpilot_prepare_attempt(),
+                }
             resp = self._transport_call(
                 messages=formatted_messages,
                 **final_kwargs,
@@ -1507,6 +1520,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
+            if (
+                call_context is not None
+                and call_context.flowpilot_prepare_attempt
+                and call_context.flowpilot_gateway_url is not None
+                and self.base_url is not None
+                and self.base_url.rstrip("/")
+                == call_context.flowpilot_gateway_url.rstrip("/")
+            ):
+                final_kwargs["extra_headers"] = {
+                    **(final_kwargs.get("extra_headers") or {}),
+                    **call_context.flowpilot_prepare_attempt(),
+                }
             resp = await self._atransport_call(
                 messages=formatted_messages,
                 **final_kwargs,
@@ -1617,6 +1642,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
+            if (
+                call_context is not None
+                and call_context.flowpilot_prepare_attempt
+                and call_context.flowpilot_gateway_url is not None
+                and self.base_url is not None
+                and self.base_url.rstrip("/")
+                == call_context.flowpilot_gateway_url.rstrip("/")
+            ):
+                final_kwargs["extra_headers"] = {
+                    **(final_kwargs.get("extra_headers") or {}),
+                    **call_context.flowpilot_prepare_attempt(),
+                }
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -1756,6 +1793,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
+            if (
+                call_context is not None
+                and call_context.flowpilot_prepare_attempt
+                and call_context.flowpilot_gateway_url is not None
+                and self.base_url is not None
+                and self.base_url.rstrip("/")
+                == call_context.flowpilot_gateway_url.rstrip("/")
+            ):
+                final_kwargs["extra_headers"] = {
+                    **(final_kwargs.get("extra_headers") or {}),
+                    **call_context.flowpilot_prepare_attempt(),
+                }
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning)
