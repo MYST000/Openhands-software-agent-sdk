@@ -5,6 +5,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from openhands.sdk.flowpilot import (
     FlowPilotRuntime,
     context_digest,
 )
+from openhands.sdk.flowpilot_reuse import payload_digest
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import (
     LLM,
@@ -671,6 +673,16 @@ def _reuse_runtime() -> FlowPilotRuntime:
     return runtime
 
 
+def _reuse_credentials() -> dict:
+    return {
+        "input_digest": payload_digest({"query": "flowpilot"}),
+        "adapter_id": "generic_v1",
+        "adapter_version": "1",
+        "result_schema_version": "1",
+        "executor_kind": "openhands_local",
+    }
+
+
 def test_exact_hit_returns_validated_observation_with_safe_provenance() -> None:
     runtime = _reuse_runtime()
     response = {
@@ -689,6 +701,11 @@ def test_exact_hit_returns_validated_observation_with_safe_provenance() -> None:
             "similarity_score": 1.0,
         },
     }
+    response.update(_reuse_credentials())
+    response["provenance"]["expires_at"] = (
+        datetime.now(UTC) + timedelta(minutes=1)
+    ).isoformat()
+    response["provenance"]["result_digest"] = payload_digest(response["result"])
     with patch.object(
         FlowPilotRuntime, "_request_json", return_value=response
     ) as request_json:
@@ -726,6 +743,7 @@ def test_semantic_opt_in_uses_phase3_and_progress_is_best_effort() -> None:
             return {
                 "decision": "sync_and_execute_as_leader",
                 "binding_id": "binding-1",
+                **_reuse_credentials(),
             }
         if path.endswith("/progress"):
             return {"status": "accepted"}
@@ -739,10 +757,10 @@ def test_semantic_opt_in_uses_phase3_and_progress_is_best_effort() -> None:
         runtime.tool_start(action)
 
     assert requests[0][1] is not None
-    assert requests[0][1]["protocol_version"] == "flowpilot-phase3-reuse-v2"
+    assert requests[0][1]["protocol_version"] == "flowpilot-phase3-reuse-v3"
     assert requests[1][0].endswith("/bindings/binding-1/progress")
     assert requests[1][1] is not None
-    assert requests[1][1]["protocol_version"] == "flowpilot-phase3-reuse-v2"
+    assert requests[1][1]["protocol_version"] == "flowpilot-phase3-reuse-v3"
 
 
 def test_follower_cancellation_releases_waiting_binding() -> None:
@@ -769,7 +787,7 @@ def test_follower_cancellation_releases_waiting_binding() -> None:
         (
             "/flowpilot/v1/reuse/bindings/binding-1/cancel",
             {
-                "protocol_version": "flowpilot-phase1-reuse-v2",
+                "protocol_version": "flowpilot-phase1-reuse-v3",
                 "binding_id": "binding-1",
                 "identity": identity,
             },
@@ -785,10 +803,12 @@ def test_re_elected_follower_wait_is_bounded_and_cancelled() -> None:
         [
             {
                 "decision": "wait_and_sync_reused_result",
+                **_reuse_credentials(),
                 "binding_id": "binding-1",
             },
             {
                 "decision": "wait_and_sync_reused_result",
+                **_reuse_credentials(),
                 "binding_id": "binding-2",
             },
         ]
@@ -826,6 +846,7 @@ def test_reuse_error_cancels_registered_follower_before_local_fallback() -> None
             "_request_json",
             return_value={
                 "decision": "wait_and_sync_reused_result",
+                **_reuse_credentials(),
                 "binding_id": "binding-1",
             },
         ),
@@ -868,6 +889,7 @@ def test_leader_result_publication_is_best_effort() -> None:
             return {
                 "decision": "sync_and_execute_as_leader",
                 "binding_id": "binding-1",
+                **_reuse_credentials(),
             }
         raise OSError("control plane unavailable after local success")
 
@@ -889,6 +911,8 @@ def test_leader_result_publication_is_best_effort() -> None:
                 started=time.monotonic(),
                 events=[event],
             )
+        assert not any(path.endswith("/result") for path, _, _ in requests)
+        runtime.observation_committed(event)
     assert requests[0][0].endswith("/resolve")
     assert requests[1][0].endswith("/bindings/binding-1/result")
     assert isinstance(event.observation, ReusableSearchObservation)
@@ -1156,7 +1180,7 @@ def test_phase2_deferred_reuse_never_injects_an_observation() -> None:
     }
     assert (
         request_json.call_args_list[1].args[1]["reuse"]["protocol_version"]
-        == "flowpilot-phase1-reuse-v2"
+        == "flowpilot-phase1-reuse-v3"
     )
 
 
@@ -1210,6 +1234,8 @@ def test_agent_loop_defers_exact_hit_until_terminal_sync(tmp_path: Path) -> None
             side_effect=authoritative_tail,
         ),
         patch.object(FlowPilotRuntime, "_post_tool_event"),
+        # These tests exercise the explicit Runtime-driven DCS path.
+        patch.object(FlowPilotRuntime, "configure_gateway_reuse"),
         patch(
             "openhands.sdk.agent.agent.make_llm_completion",
             side_effect=lambda *args, **kwargs: next(responses),
@@ -1288,6 +1314,8 @@ def test_agent_loop_releases_empty_delegation_before_local_fallback(
             side_effect=authoritative_tail,
         ),
         patch.object(FlowPilotRuntime, "_post_tool_event"),
+        # These tests exercise the explicit Runtime-driven DCS path.
+        patch.object(FlowPilotRuntime, "configure_gateway_reuse"),
         patch(
             "openhands.sdk.agent.agent.make_llm_completion",
             side_effect=lambda *args, **kwargs: next(responses),
@@ -1347,6 +1375,8 @@ async def test_async_agent_loop_defers_exact_hit_until_terminal_sync(
             side_effect=authoritative_tail,
         ),
         patch.object(FlowPilotRuntime, "_post_tool_event"),
+        # These tests exercise the explicit Runtime-driven DCS path.
+        patch.object(FlowPilotRuntime, "configure_gateway_reuse"),
         patch(
             "openhands.sdk.agent.agent.amake_llm_completion",
             side_effect=completion,
@@ -1417,6 +1447,8 @@ def test_agent_loop_acks_hidden_delta_before_local_tool(tmp_path: Path) -> None:
             side_effect=authoritative_tail,
         ),
         patch.object(FlowPilotRuntime, "_post_tool_event"),
+        # These tests exercise the explicit Runtime-driven DCS path.
+        patch.object(FlowPilotRuntime, "configure_gateway_reuse"),
         patch(
             "openhands.sdk.agent.agent.make_llm_completion",
             side_effect=lambda *args, **kwargs: next(responses),
@@ -1506,6 +1538,8 @@ async def test_async_agent_loop_acks_hidden_delta_before_local_tool(
             side_effect=authoritative_tail,
         ),
         patch.object(FlowPilotRuntime, "_post_tool_event"),
+        # These tests exercise the explicit Runtime-driven DCS path.
+        patch.object(FlowPilotRuntime, "configure_gateway_reuse"),
         patch(
             "openhands.sdk.agent.agent.amake_llm_completion",
             side_effect=completion,

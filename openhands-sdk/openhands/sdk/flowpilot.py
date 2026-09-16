@@ -18,6 +18,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import SecretStr
 
+from openhands.sdk.event import ObservationEvent
+from openhands.sdk.flowpilot_reuse import (
+    canonical_input,
+    canonical_json,
+    payload_digest,
+)
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -96,9 +103,9 @@ class FlowPilotConfig:
     @property
     def reuse_protocol_version(self) -> str:
         return (
-            "flowpilot-phase3-reuse-v2"
+            "flowpilot-phase3-reuse-v3"
             if self.semantic_reuse_enabled
-            else "flowpilot-phase1-reuse-v2"
+            else "flowpilot-phase1-reuse-v3"
         )
 
     def validate(self, *, tool_concurrency_limit: int) -> None:
@@ -250,6 +257,11 @@ class FlowPilotRuntime:
     _dcs_base_context_digest: str | None = None
     _dcs_last_seq: int = 0
     _dcs_required_sync_reason: str | None = None
+    _gateway_reuse_policy: dict[str, Any] | None = None
+    _gateway_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _gateway_batches: list[dict[str, Any]] = field(default_factory=list)
+    _leader_credentials: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _pending_publications: dict[str, dict[str, Any]] = field(default_factory=dict)
     _file_store: FileStore | None = None
     _sync_response: dict[str, Any] | None = None
     _sync_reference: FlowPilotDCSReference | None = None
@@ -809,7 +821,44 @@ class FlowPilotRuntime:
             )
             self._active_identity = identity
             self._transport_attempts = 0
+            self._gateway_reuse_policy = None
+            self._gateway_decisions.clear()
+            self._gateway_batches.clear()
             return identity
+
+    def configure_gateway_reuse(
+        self,
+        *,
+        deferred: bool,
+        api_kind: Literal["chat", "responses"],
+        tool_schema_digests: dict[str, str] | None = None,
+    ) -> None:
+        if not self.config.exact_reuse_enabled:
+            return
+        now = datetime.now(UTC)
+        self._gateway_reuse_policy = {
+            "allowed_tool_names": list(self.config.reusable_web_tools),
+            "tool_schema_digests": tool_schema_digests or {},
+            "reuse_protocol_version": self.config.reuse_protocol_version,
+            "deferred": deferred,
+            "policy_version": self._dcs_policy_version + 1,
+            "expected_policy_version": self._dcs_policy_version,
+            "lease_id": str(uuid.uuid4()),
+            "lease_seconds": self.config.delegation_lease_seconds,
+            "max_messages": self.config.deferred_max_messages,
+            "max_bytes": self.config.deferred_max_bytes,
+            "max_internal_continuations": self.config.max_internal_continuations,
+            "delta_ttl_seconds": self.config.deferred_delta_ttl_seconds,
+            "locale": self.config.locale,
+            "language": self.config.language,
+            "region": self.config.region,
+            "safe_search_policy": self.config.safe_search_policy,
+            "time_sensitivity_class": self.config.time_sensitivity_class,
+            "data_source_constraints": list(self.config.data_source_constraints),
+            "output_budget_bytes": self.config.reuse_output_budget_bytes,
+            "api_kind": api_kind,
+            "issued_at": now.isoformat(),
+        }
 
     def prepare_attempt(self) -> dict[str, str]:
         """Bind one provider transport invocation to the logical request."""
@@ -825,7 +874,93 @@ class FlowPilotRuntime:
                 )
                 self._active_identity = identity
             self._transport_attempts += 1
-            return identity.headers(self.config.api_key)
+            headers = identity.headers(self.config.api_key)
+            if self._gateway_reuse_policy is not None:
+                headers["x-flowpilot-reuse-policy"] = json.dumps(
+                    self._gateway_reuse_policy,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            return headers
+
+    def accept_gateway_response(self, response: Any) -> None:
+        """Accept Scheduler-owned reuse metadata before tail commit."""
+        raw = getattr(response, "raw_response", response)
+        metadata = raw.get("flowpilot") if hasattr(raw, "get") else None
+        if not isinstance(metadata, dict):
+            return
+        with self._lock:
+            identity = self._active_identity
+        if identity is None:
+            raise RuntimeError("FlowPilot has no active request for response metadata")
+        for item in metadata.get("decisions", []):
+            if not isinstance(item, dict):
+                raise RuntimeError("FlowPilot reuse metadata is malformed")
+            item_identity = item.get("identity")
+            if not isinstance(item_identity, dict):
+                raise RuntimeError("FlowPilot reuse identity is missing")
+            if (
+                item_identity.get("job_id") != identity.job_id
+                or item_identity.get("line_id") != identity.line_id
+            ):
+                raise RuntimeError("FlowPilot reuse identity does not match the line")
+            tool_call_id = item_identity.get("tool_call_id")
+            if not isinstance(tool_call_id, str):
+                raise RuntimeError("FlowPilot reuse tool_call_id is missing")
+            with self._lock:
+                self._gateway_decisions[tool_call_id] = item
+        batches = metadata.get("batches")
+        if batches is not None:
+            if not isinstance(batches, list) or not all(
+                isinstance(item, dict) for item in batches
+            ):
+                raise RuntimeError("FlowPilot gateway DCS batches are malformed")
+            with self._lock:
+                self._gateway_batches = list(batches)
+        policy_version = metadata.get("policy_version")
+        if isinstance(policy_version, int):
+            with self._lock:
+                self._dcs_policy_version = policy_version
+        final = metadata.get("final_identity")
+        if final is not None:
+            if not isinstance(final, dict):
+                raise RuntimeError("FlowPilot final identity is malformed")
+            if (
+                final.get("job_id") != identity.job_id
+                or final.get("line_id") != identity.line_id
+                or final.get("conversation_id") != identity.conversation_id
+                or final.get("origin") != "scheduler_delegated"
+                or not isinstance(final.get("delegation_lease_id"), str)
+            ):
+                raise RuntimeError("FlowPilot continuation identity is invalid")
+            with self._lock:
+                self._active_identity = replace(
+                    identity,
+                    request_id=str(final["request_id"]),
+                    tail_request_id=str(final["tail_request_id"]),
+                    llm_call_id=str(final["llm_call_id"]),
+                    attempt=int(final["attempt"]),
+                    tail_version=int(final["expected_tail_version"]),
+                    context_sequence=int(final["context_sequence"]),
+                    base_context_cursor=str(final["base_context_cursor"]),
+                    context_digest=str(final["context_digest"]),
+                    origin="scheduler_delegated",
+                    delegation_lease_id=str(final["delegation_lease_id"]),
+                )
+        reference = metadata.get("dcs_reference")
+        if isinstance(reference, dict):
+            with self._lock:
+                self._dcs_reference = FlowPilotDCSReference(
+                    job_id=str(reference["job_id"]),
+                    line_id=str(reference["line_id"]),
+                    context_epoch=int(reference["context_epoch"]),
+                    lease_id=str(reference["lease_id"]),
+                    base_context_cursor=str(reference["base_context_cursor"]),
+                    delta_digest=str(reference["delta_digest"]),
+                )
+                self._dcs_base_context_sequence = identity.context_sequence
+                self._dcs_base_context_digest = identity.context_digest
+                self._dcs_last_seq = int(metadata.get("delta_seq", 0))
 
     def commit_request(self, identity: FlowPilotRequestIdentity) -> None:
         tail = self._fetch_authoritative_tail()
@@ -1068,7 +1203,7 @@ class FlowPilotRuntime:
         reference = self._require_dcs_reference()
         reuse_identity = self._reuse_identity(identity, action)
         reuse = {
-            "protocol_version": "flowpilot-phase1-reuse-v2",
+            "protocol_version": "flowpilot-phase1-reuse-v3",
             "identity": reuse_identity,
             "tool_name": action.tool_name,
             "arguments": _provider_tool_arguments(action),
@@ -1137,7 +1272,9 @@ class FlowPilotRuntime:
             decision.get("result_digest"), str
         ):
             raise ValueError("FlowPilot deferred result proof is malformed")
-        observation = observation_type.model_validate(result)
+        observation = observation_type.model_validate(
+            json.loads(canonical_json(result))
+        )
         return _with_provider_content(observation, provider_content)
 
     def prepare_internal_continuation(self, parent_llm_call_id: str) -> dict[str, Any]:
@@ -1380,6 +1517,8 @@ class FlowPilotRuntime:
             self._dcs_base_context_digest = None
             self._dcs_last_seq = 0
             self._dcs_required_sync_reason = None
+            self._gateway_batches.clear()
+            self._gateway_decisions.clear()
 
     def _require_dcs_reference(self) -> FlowPilotDCSReference:
         with self._lock:
@@ -1409,6 +1548,17 @@ class FlowPilotRuntime:
             return self._active_identity
 
     @property
+    def gateway_batches(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._gateway_batches)
+
+    @property
+    def gateway_reuse_configured(self) -> bool:
+        """Whether this request is using Scheduler-owned reuse control."""
+        with self._lock:
+            return self._gateway_reuse_policy is not None
+
+    @property
     def tool_identity(self) -> FlowPilotRequestIdentity | None:
         with self._lock:
             return self._tool_identity
@@ -1424,10 +1574,31 @@ class FlowPilotRuntime:
             attempt = self._attempts.get(action.tool_call_id, 0) + 1
             self._attempts[action.tool_call_id] = attempt
         common = self._tool_common(identity, action, attempt)
+        with self._lock:
+            credentials = self._leader_credentials.get(action.id)
+        if credentials is not None:
+            common.update(
+                {
+                    key: credentials[key]
+                    for key in (
+                        "binding_id",
+                        "input_digest",
+                        "adapter_id",
+                        "adapter_version",
+                        "result_schema_version",
+                        "executor_kind",
+                    )
+                }
+            )
+            common["reuse_receipt_version"] = "flowpilot-execution-v1"
+        event_id = str(uuid.uuid4())
+        if credentials is not None:
+            credentials["start_event_id"] = event_id
+            credentials["execution_attempt"] = attempt
         self._post_tool_event(
             {
                 **common,
-                "event_id": str(uuid.uuid4()),
+                "event_id": event_id,
                 "sequence": 1,
                 "event_kind": "start",
             }
@@ -1462,7 +1633,11 @@ class FlowPilotRuntime:
             logger.warning("FlowPilot leader progress report failed", exc_info=True)
 
     def resolve_reuse(
-        self, action: ActionEvent, observation_type: type[Observation] | None
+        self,
+        action: ActionEvent,
+        observation_type: type[Observation] | None,
+        *,
+        input_schema_digest: str | None = None,
     ) -> Observation | None:
         """Return a validated reused observation, or None to execute locally."""
         if (
@@ -1474,14 +1649,18 @@ class FlowPilotRuntime:
             return None
         with self._lock:
             identity = self._tool_identity
+            gateway_decision = self._gateway_decisions.pop(action.tool_call_id, None)
+            gateway_reuse_configured = self._gateway_reuse_policy is not None
         if identity is None:
+            return None
+        if gateway_reuse_configured and gateway_decision is None:
             return None
         reuse_identity = self._reuse_identity(identity, action)
         payload: dict[str, Any] = {
             "protocol_version": self.config.reuse_protocol_version,
             "identity": reuse_identity,
             "tool_name": action.tool_name,
-            "arguments": _provider_tool_arguments(action),
+            "arguments": _execution_tool_arguments(action),
             "scope": {
                 "locale": self.config.locale,
                 "language": self.config.language,
@@ -1491,6 +1670,7 @@ class FlowPilotRuntime:
                 "data_source_constraints": list(self.config.data_source_constraints),
             },
             "output_budget_bytes": self.config.reuse_output_budget_bytes,
+            "input_schema_digest": input_schema_digest,
         }
         cancel_event = threading.Event()
         with self._lock:
@@ -1498,9 +1678,31 @@ class FlowPilotRuntime:
         try:
             if cancel_event.is_set():
                 raise asyncio.CancelledError()
-            decision = self._request_json(
+            actual_digest = payload_digest(
+                canonical_input(action.tool_name, payload["arguments"])
+            )
+            decision = gateway_decision or self._request_json(
                 "/flowpilot/v1/reuse/resolve", payload, method="POST"
             )
+            if gateway_decision is not None:
+                expected_identity = {**reuse_identity, "action_id": None}
+                if gateway_decision.get("identity") != expected_identity:
+                    raise ValueError("Gateway decision ToolCallRef mismatch")
+            if decision.get("decision") != "execute_locally" and (
+                decision.get("input_digest") != actual_digest
+                or decision.get("input_schema_digest") != input_schema_digest
+            ):
+                self._reject_gateway_binding(decision, reuse_identity)
+                decision = self._request_json(
+                    "/flowpilot/v1/reuse/resolve", payload, method="POST"
+                )
+                if decision.get("decision") != "execute_locally" and (
+                    decision.get("input_digest") != actual_digest
+                    or decision.get("input_schema_digest") != input_schema_digest
+                ):
+                    raise ValueError(
+                        "Runtime input digest does not match reuse adapter"
+                    )
             # A lease expiry releases a follower. Re-resolve once so the
             # caller can become the new leader, while bounding control-plane
             # waits if the replacement binding is also unavailable.
@@ -1512,10 +1714,12 @@ class FlowPilotRuntime:
                 if kind == "sync_and_execute_as_leader" and isinstance(binding_id, str):
                     with self._lock:
                         self._leader_bindings[action.id] = (identity, binding_id)
+                        self._leader_credentials[action.id] = dict(decision)
                     return None
-                if kind != "wait_and_sync_reused_result" or not isinstance(
-                    binding_id, str
-                ):
+                if kind not in {
+                    "wait_and_sync_reused_result",
+                    "defer_wait_for_inflight",
+                } or not isinstance(binding_id, str):
                     break
                 with self._lock:
                     self._waiting_reuses[action.id] = (binding_id, reuse_identity)
@@ -1533,13 +1737,25 @@ class FlowPilotRuntime:
             if cancel_event.is_set():
                 raise asyncio.CancelledError()
             kind = decision.get("decision")
-            if kind != "sync_with_reused_result":
+            if kind not in {"sync_with_reused_result", "defer_with_cached_result"}:
                 return None
             result = decision.get("result")
             provenance = decision.get("provenance")
             if not isinstance(result, dict) or not isinstance(provenance, dict):
                 raise ValueError("FlowPilot reuse result is malformed")
-            observation = observation_type.model_validate(result)
+            # OpenHands' discriminator validator removes `kind` from its input.
+            # Preserve the committed wire value for digest validation and retries.
+            observation = observation_type.model_validate(
+                json.loads(canonical_json(result))
+            )
+            expiry = provenance.get("expires_at")
+            if not isinstance(expiry, str) or datetime.fromisoformat(
+                expiry
+            ) <= datetime.now(UTC):
+                logger.info("FlowPilot result expired before Observation delivery")
+                return None
+            if payload_digest(result) != provenance.get("result_digest"):
+                raise ValueError("FlowPilot result digest mismatch")
             return _with_reuse_provenance(observation, result, provenance)
         except asyncio.CancelledError:
             with self._lock:
@@ -1560,6 +1776,26 @@ class FlowPilotRuntime:
             with self._lock:
                 self._reuse_cancellations.pop(action.id, None)
                 self._waiting_reuses.pop(action.id, None)
+
+    def _reject_gateway_binding(
+        self, decision: dict[str, Any], identity: dict[str, str]
+    ) -> None:
+        binding = decision.get("binding_id")
+        if not isinstance(binding, str):
+            return
+        if decision.get("decision") == "sync_and_execute_as_leader":
+            self._request_json(
+                f"/flowpilot/v1/reuse/bindings/{binding}/fail",
+                {
+                    "protocol_version": self.config.reuse_protocol_version,
+                    "binding_id": binding,
+                    "identity": identity,
+                    "error_class": "InputChangedBeforeExecution",
+                },
+                method="POST",
+            )
+        else:
+            self._cancel_follower(binding, identity)
 
     def tool_blocked(self, action: ActionEvent) -> None:
         """Report a policy-blocked call without claiming local execution."""
@@ -1599,6 +1835,7 @@ class FlowPilotRuntime:
             return
         common = self._tool_common(identity, action, attempt)
         latency = round((time.monotonic() - started) * 1000, 3)
+        terminal: dict[str, Any]
         if cancelled:
             terminal = {"event_kind": "cancel", "error_class": "CancelledError"}
         elif error is not None:
@@ -1609,8 +1846,41 @@ class FlowPilotRuntime:
                 "measured_latency_ms": latency,
                 "result_size_bytes": _event_result_size(events or []),
             }
+        event_id = str(uuid.uuid4())
+        with self._lock:
+            credentials = self._leader_credentials.get(action.id)
+        if credentials is not None:
+            common.update(
+                {
+                    key: credentials[key]
+                    for key in (
+                        "binding_id",
+                        "input_digest",
+                        "adapter_id",
+                        "adapter_version",
+                        "result_schema_version",
+                        "executor_kind",
+                    )
+                }
+            )
+            common["reuse_receipt_version"] = "flowpilot-execution-v1"
+            if events and isinstance(events[0], ObservationEvent):
+                try:
+                    result = events[0].observation.model_dump(mode="json")
+                    credentials["result"] = result
+                    credentials["result_digest"] = payload_digest(result)
+                    credentials["result_size_bytes"] = len(
+                        canonical_json(result).encode()
+                    )
+                    credentials["finish_event_id"] = event_id
+                    common["result_digest"] = credentials["result_digest"]
+                    if result.get("final_url_digest") is not None:
+                        common["final_url_digest"] = result["final_url_digest"]
+                    terminal["result_size_bytes"] = credentials["result_size_bytes"]
+                except (TypeError, ValueError):
+                    logger.warning("FlowPilot result canonicalization failed")
         self._post_tool_event(
-            {**common, **terminal, "event_id": str(uuid.uuid4()), "sequence": 2}
+            {**common, **terminal, "event_id": event_id, "sequence": 2}
         )
         self._complete_leader_binding(
             action,
@@ -1633,6 +1903,23 @@ class FlowPilotRuntime:
             return
         identity, attempt, _started = active
         common = self._tool_common(identity, action, attempt)
+        with self._lock:
+            credentials = self._leader_credentials.get(action.id)
+        if credentials is not None:
+            common.update(
+                {
+                    key: credentials[key]
+                    for key in (
+                        "binding_id",
+                        "input_digest",
+                        "adapter_id",
+                        "adapter_version",
+                        "result_schema_version",
+                        "executor_kind",
+                    )
+                }
+            )
+            common["reuse_receipt_version"] = "flowpilot-execution-v1"
         self._post_tool_event(
             {
                 **common,
@@ -1681,7 +1968,7 @@ class FlowPilotRuntime:
         return common
 
     def _post_tool_event(self, payload: dict[str, Any]) -> None:
-        payload["observed_at"] = datetime.now(UTC).isoformat()
+        payload.setdefault("observed_at", datetime.now(UTC).isoformat())
         request = urllib.request.Request(
             f"{self.config.control_base_url}/flowpilot/v1/events/tools",
             data=json.dumps(payload, separators=(",", ":")).encode(),
@@ -1691,11 +1978,13 @@ class FlowPilotRuntime:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.config.timeout):
-                pass
-        except Exception:
-            logger.warning("FlowPilot tool telemetry failed", exc_info=True)
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(request, timeout=self.config.timeout):
+                    return
+            except Exception:
+                if attempt == 1:
+                    logger.warning("FlowPilot tool telemetry failed", exc_info=True)
 
     def _post_control(self, path: str, payload: dict[str, Any]) -> None:
         payload["protocol_version"] = "flowpilot-phase0-v2"
@@ -1731,6 +2020,8 @@ class FlowPilotRuntime:
         reuse_identity = self._reuse_identity(identity, action)
         try:
             if error is not None or cancelled or not events:
+                with self._lock:
+                    self._leader_credentials.pop(action.id, None)
                 self._request_json(
                     f"/flowpilot/v1/reuse/bindings/{binding_id}/fail",
                     {
@@ -1744,22 +2035,61 @@ class FlowPilotRuntime:
                     method="POST",
                 )
                 return
-            observation = getattr(events[0], "observation", None)
-            if observation is None:
+            if not isinstance(events[0], ObservationEvent):
                 raise ValueError("leader did not produce an ObservationEvent")
-            self._request_json(
-                f"/flowpilot/v1/reuse/bindings/{binding_id}/result",
-                {
-                    "protocol_version": self.config.reuse_protocol_version,
-                    "binding_id": binding_id,
-                    "identity": reuse_identity,
-                    "result": observation.model_dump(mode="json"),
-                    "cacheable": True,
+            credentials = self._leader_credentials.pop(action.id)
+            self._pending_publications[action.id] = {
+                "protocol_version": self.config.reuse_protocol_version,
+                "binding_id": binding_id,
+                "identity": reuse_identity,
+                "cacheable": True,
+                **{
+                    key: credentials[key]
+                    for key in (
+                        "start_event_id",
+                        "finish_event_id",
+                        "execution_attempt",
+                        "input_digest",
+                        "result_digest",
+                        "result_size_bytes",
+                        "result_schema_version",
+                        "result",
+                    )
                 },
-                method="POST",
-            )
+            }
         except Exception:
             logger.warning("FlowPilot leader result publication failed", exc_info=True)
+
+    def observation_committed(self, event: ObservationEvent) -> None:
+        """Called only after the authoritative history accepted this Observation."""
+        with self._lock:
+            publication = self._pending_publications.get(event.action_id)
+        if publication is None:
+            return
+        if (
+            payload_digest(event.observation.model_dump(mode="json"))
+            != publication["result_digest"]
+        ):
+            logger.warning("FlowPilot committed Observation differs from FINISH")
+            return
+        # Retry the identical fingerprint after response loss. Never re-execute
+        # the Tool or alter the already committed Observation on failure.
+        for attempt in range(2):
+            try:
+                self._request_json(
+                    f"/flowpilot/v1/reuse/bindings/{publication['binding_id']}/result",
+                    publication,
+                    method="POST",
+                )
+            except Exception:
+                if attempt == 1:
+                    logger.warning(
+                        "FlowPilot publication failed after local commit", exc_info=True
+                    )
+            else:
+                break
+        with self._lock:
+            self._pending_publications.pop(event.action_id, None)
 
     def _wait_for_reuse(
         self,
@@ -1780,7 +2110,10 @@ class FlowPilotRuntime:
             )
             if cancel_event.is_set():
                 return {"decision": "cancelled"}
-            if decision.get("decision") != "wait_and_sync_reused_result":
+            if decision.get("decision") not in {
+                "wait_and_sync_reused_result",
+                "defer_wait_for_inflight",
+            }:
                 return decision
             cancel_event.wait(self.config.reuse_poll_interval)
         if cancel_event.is_set():
@@ -1938,6 +2271,15 @@ def _redact_provider_message(message: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def _execution_tool_arguments(action: ActionEvent) -> dict[str, Any]:
+    if action.action is None:
+        raise ValueError("Tool Action is missing")
+    value = action.action.model_dump(mode="json", exclude={"kind", "security_risk"})
+    if action.tool_name.startswith("tavily-") and isinstance(value.get("data"), dict):
+        return value["data"]
+    return value
+
+
 def _provider_tool_arguments(action: ActionEvent) -> dict[str, Any]:
     try:
         arguments = json.loads(action.tool_call.arguments)
@@ -1964,16 +2306,22 @@ def _event_result_size(events: list[Event]) -> int:
     if not observations:
         return 0
     payload: Any = observations[0] if len(observations) == 1 else observations
-    return len(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+    return len(canonical_json(payload).encode())
 
 
 def _with_reuse_provenance(
     observation: Observation,
-    result: dict[str, Any],
+    _result: dict[str, Any],
     provenance: dict[str, Any],
 ) -> Observation:
-    provider_content = _reuse_provider_content(result, provenance)
-    return _with_provider_content(observation, provider_content)
+    allowed = {
+        key: provenance[key]
+        for key in ("reuse_type", "observed_at", "result_schema_version")
+    }
+    suffix = TextContent(
+        text="\n[FlowPilot reuse provenance: " + canonical_json(allowed) + "]"
+    )
+    return observation.model_copy(update={"content": [*observation.content, suffix]})
 
 
 def _with_provider_content(

@@ -1,0 +1,50 @@
+{
+  "sources": [
+    {
+      "title": "Retrieval-Augmented Generation (RAG) - AWS",
+      "url": "https://aws.amazon.com/what-is/retrieval-augmented-generation",
+      "publisher": "Amazon Web Services (AWS)",
+      "access_time": "2025-03-25T10:00:00Z",
+      "claim": "RAG is the process of optimizing LLM output by referencing an authoritative knowledge base outside of training data before generating a response, without requiring retraining. It addresses LLM challenges including presenting false information, out-of-date information, responses from non-authoritative sources, and terminology confusion.",
+      "category": "Primary - Cloud Provider Documentation"
+    },
+    {
+      "title": "End-to-End RAG Workflow - Databricks",
+      "url": "https://www.databricks.com/blog/rag-workflow",
+      "publisher": "Databricks",
+      "access_time": "2025-03-25T10:00:00Z",
+      "claim": "RAG connects LLMs to external knowledge bases through a five-stage pipeline: ingestion, embedding, retrieval, augmentation, and generation. Retriever quality is the single biggest determinant of RAG output quality.",
+      "category": "Primary - Data Engineering Platform Documentation"
+    },
+    {
+      "title": "Retrieval-Augmented Generation (RAG) - Pinecone",
+      "url": "https://www.pinecone.io/learn/retrieval-augmented-generation",
+      "publisher": "Pinecone",
+      "access_time": "2025-03-25T10:00:00Z",
+      "claim": "RAG is a technique that uses authoritative, external data to improve accuracy, relevancy, and usefulness of model output through four core components: ingestion, retrieval, augmentation, generation.",
+      "category": "Primary - Vector Database Provider Documentation"
+    },
+    {
+      "title": "Retrieval-augmented generation - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Retrieval-augmented_generation",
+      "publisher": "Wikimedia Foundation",
+      "access_time": "2025-03-25T10:00:00Z",
+      "claim": "RAG is a technique that enables LLMs to retrieve and incorporate new information from external data sources. The technique was first proposed in 2020 and has since become widely adopted in modern AI systems.",
+      "category": "Tertiary - Encyclopedia"
+    },
+    {
+      "title": "What is retrieval augmented generation (RAG)? - IBM",
+      "url": "https://www.ibm.com/think/topics/retrieval-augmented-generation",
+      "publisher": "IBM",
+      "access_time": "2025-03-25T10:00:00Z",
+      "claim": "RAG is an architecture for optimizing AI model performance by connecting it with external knowledge bases. It provides cost-efficient implementation, access to current domain-specific data, lower risk of AI hallucinations, and expanded use cases.",
+      "category": "Primary - Enterprise Technology Provider Documentation"
+    }
+  ],
+  "metadata": {
+    "research_topic": "RAG (Retrieval-Augmented Generation) and its principles",
+    "sources_examined": 5,
+    "search_date": "2025-03-25",
+    "summary": "All five sources consistently define RAG as a technique to improve LLM accuracy by retrieving external knowledge before generation. Key principles include: (1) external knowledge base connection, (2) five-stage workflow, (3) improved accuracy over training data only, (4) reduced hallucinations, (5) no retraining required."
+  }
+}

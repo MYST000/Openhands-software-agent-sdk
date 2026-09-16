@@ -30,7 +30,10 @@ from openhands.tools.terminal import TerminalTool
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "deep_search_runs"
-TOOL_RECORDS = REPO_ROOT / ".openhands" / "tool-records" / "tool_calls.jsonl"
+# Keep this aligned with the current pre/post hook implementations.
+DEFAULT_TOOL_RECORDS = Path(
+    "/home/liyachen/workspace/experiments/traces/tool-records/tool_calls.jsonl"
+)
 DEFAULT_LLM_TRACE_FILE = REPO_ROOT / "traces" / "llm-records" / "llm_calls.jsonl"
 DEFAULT_COMPLETION_LOG_DIR = REPO_ROOT / "traces" / "completion_logs"
 
@@ -267,10 +270,19 @@ def parse_args() -> argparse.Namespace:
             "Qwen reasoning models need enough room."
         ),
     )
-    parser.add_argument(
+    web_group = parser.add_mutually_exclusive_group()
+    web_group.add_argument(
         "--browser",
         action="store_true",
         help="Enable BrowserToolSet. Requires Chromium or Playwright Chromium.",
+    )
+    web_group.add_argument(
+        "--tavily",
+        action="store_true",
+        help=(
+            "Enable the Tavily MCP server for web search/extraction. Requires "
+            "TAVILY_API_KEY. This cannot be combined with --browser."
+        ),
     )
     parser.add_argument(
         "--stream",
@@ -300,17 +312,42 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_agent(llm: LLM, *, enable_browser: bool) -> Agent:
+def build_agent(llm: LLM, *, enable_browser: bool, enable_tavily: bool) -> Agent:
     tools = [
-        Tool(name=TerminalTool.name),
         Tool(name=FileEditorTool.name),
         Tool(name=TaskTrackerTool.name),
     ]
+    # Keep Tavily runs focused on web-tool events. Terminal remains available
+    # for the legacy/browser mode, where it is part of the original experiment.
+    if not enable_tavily:
+        tools.insert(0, Tool(name=TerminalTool.name))
+
     if enable_browser:
         from openhands.tools.browser_use import BrowserToolSet
 
         tools.append(Tool(name=BrowserToolSet.name))
-    return Agent(llm=llm, tools=tools)
+
+    mcp_config: dict[str, Any] = {}
+    if enable_tavily:
+        tavily_api_key = os.getenv("TAVILY_API_KEY")
+        if not tavily_api_key:
+            raise RuntimeError(
+                "--tavily requires TAVILY_API_KEY in the environment; "
+                "the key is never written to trace files"
+            )
+        # Inject the already-resolved secret here. The low-level MCP client
+        # does not expand ${TAVILY_API_KEY} placeholders by itself.
+        mcp_config = {
+            "mcpServers": {
+                "tavily": {
+                    "command": "npx",
+                    "args": ["-y", "tavily-mcp@0.2.1"],
+                    "env": {"TAVILY_API_KEY": tavily_api_key},
+                }
+            }
+        }
+
+    return Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 
 
 def main() -> int:
@@ -328,6 +365,7 @@ def main() -> int:
     report_path = output_dir / "report.md"
     sources_path = output_dir / "sources.json"
     notes_path = output_dir / "notes.md"
+    tool_records = DEFAULT_TOOL_RECORDS.expanduser()
 
     hook_config = HookConfig.load(working_dir=REPO_ROOT)
     if hook_config.is_empty():
@@ -345,7 +383,7 @@ def main() -> int:
         trace_file=str(llm_trace_file),
         include_payloads=not args.no_llm_payloads,
     )
-    agent = build_agent(llm, enable_browser=args.browser)
+    agent = build_agent(llm, enable_browser=args.browser, enable_tavily=args.tavily)
     conversation = Conversation(
         agent=agent,
         workspace=str(REPO_ROOT),
@@ -353,6 +391,15 @@ def main() -> int:
         token_callbacks=[lambda _chunk: None] if args.stream else None,
     )
 
+    web_policy = (
+        "Use the Tavily MCP tools for web research. Use tavily-search for "
+        "discovery and tavily-extract when you need the contents of a specific "
+        "URL. Do not use browser tools or terminal commands for web research."
+        if args.tavily
+        else "Use terminal commands such as curl, python, or text extraction "
+        "utilities to fetch and inspect pages. If browser tools are available, "
+        "use them when useful."
+    )
     prompt = f"""
 You are running a deep-search service test for OpenHands with a local LLM.
 
@@ -361,12 +408,15 @@ Research question:
 
 Use tools to perform the research. Do not answer from memory only.
 
+Web-tool policy:
+{web_policy}
+
 Requirements:
 1. Create this directory if needed: {output_dir}
 2. Inspect at least {args.min_sources} independent sources. Prefer primary sources,
    official docs, papers, release notes, benchmark pages, or source repositories.
-3. Use terminal commands such as curl, python, or text extraction utilities to
-   fetch and inspect pages. If browser tools are available, use them when useful.
+3. Follow the web-tool policy above and inspect the returned contents rather than
+   answering from search snippets alone.
 4. Save structured source metadata to {sources_path}. Each source item should
    include title, url or local path, publisher, access_time, and the specific claim
    it supports.
@@ -389,10 +439,11 @@ exist, then report their paths.
     print(f"Base URL: {args.base_url}")
     print(f"Max output tokens: {args.max_output_tokens}")
     print(f"Browser enabled: {args.browser}")
+    print(f"Tavily enabled: {args.tavily}")
     print(f"Streaming enabled: {args.stream}")
     print(f"Workspace: {REPO_ROOT}")
     print(f"Output directory: {output_dir}")
-    print(f"Tool records: {TOOL_RECORDS}")
+    print(f"Tool records: {tool_records}")
     print(f"LLM traces: {llm_trace_file}")
     print(f"Completion logs: {completion_log_dir}")
     print("-" * 80)
@@ -405,7 +456,7 @@ exist, then report their paths.
     print(f"Report: {report_path}")
     print(f"Sources: {sources_path}")
     print(f"Notes: {notes_path}")
-    print(f"Tool records: {TOOL_RECORDS}")
+    print(f"Tool records: {tool_records}")
     print(f"LLM traces: {llm_trace_file}")
     print(f"Completion logs: {completion_log_dir}")
     print(f"EXAMPLE_COST: {cost}")

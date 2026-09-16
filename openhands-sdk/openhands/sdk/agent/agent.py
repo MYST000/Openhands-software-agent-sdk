@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from litellm import ResponsesAPIResponse
+from litellm.types.utils import ModelResponse
 from pydantic import PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
@@ -54,6 +56,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.flowpilot import context_digest
+from openhands.sdk.flowpilot_reuse import payload_digest
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -695,6 +698,19 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         _messages = _messages_or_condensation
 
+        if conversation._flowpilot_runtime is not None:
+            conversation._flowpilot_runtime.configure_gateway_reuse(
+                deferred=self._flowpilot_delegation_is_safe(
+                    conversation, state, _messages
+                ),
+                api_kind=("responses" if self.llm.uses_responses_api() else "chat"),
+                tool_schema_digests={
+                    name: payload_digest(tool.mcp_tool.inputSchema)
+                    for name, tool in self.tools_map.items()
+                    if isinstance(tool, MCPToolDefinition)
+                },
+            )
+
         if _should_handle_non_multimodal_image_input(self.llm, _messages):
             if VISION_INSPECT_TOOL_NAME in self.tools_map:
                 logger.info(
@@ -732,6 +748,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_token=on_token,
                     call_context=call_context,
                 )
+            except BaseException:
+                conversation.abort_flowpilot_llm_call(call_context)
+                raise
+            try:
+                conversation.accept_flowpilot_gateway_response(llm_response)
             except BaseException:
                 conversation.abort_flowpilot_llm_call(call_context)
                 raise
@@ -899,6 +920,19 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         _messages = _messages_or_condensation
 
+        if conversation._flowpilot_runtime is not None:
+            conversation._flowpilot_runtime.configure_gateway_reuse(
+                deferred=self._flowpilot_delegation_is_safe(
+                    conversation, state, _messages
+                ),
+                api_kind=("responses" if self.llm.uses_responses_api() else "chat"),
+                tool_schema_digests={
+                    name: payload_digest(tool.mcp_tool.inputSchema)
+                    for name, tool in self.tools_map.items()
+                    if isinstance(tool, MCPToolDefinition)
+                },
+            )
+
         if _should_handle_non_multimodal_image_input(self.llm, _messages):
             if VISION_INSPECT_TOOL_NAME in self.tools_map:
                 logger.info(
@@ -936,6 +970,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_token=on_token,
                     call_context=call_context,
                 )
+            except BaseException:
+                conversation.abort_flowpilot_llm_call(call_context)
+                raise
+            try:
+                conversation.accept_flowpilot_gateway_response(llm_response)
             except BaseException:
                 conversation.abort_flowpilot_llm_call(call_context)
                 raise
@@ -1064,6 +1103,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_token: ConversationTokenCallbackType | None,
     ) -> tuple[bool, LLMResponse]:
         runtime = conversation._flowpilot_runtime
+        gateway_batches = runtime.gateway_batches if runtime is not None else []
+        if gateway_batches:
+            batches = self._flowpilot_reconstruct_gateway_batches(
+                gateway_batches, conversation=conversation, state=state
+            )
+            self._flowpilot_sync_batches(
+                runtime,
+                batches,
+                conversation=conversation,
+                on_event=on_event,
+                barrier_reason="terminal_response",
+                parent_llm_call_id=str(gateway_batches[-1]["parent_llm_call_id"]),
+            )
+            return False, llm_response
+        if runtime is not None and runtime.gateway_reuse_configured:
+            return False, llm_response
         if not self._flowpilot_delegation_is_safe(conversation, state, messages):
             return False, llm_response
         assert runtime is not None
@@ -1336,8 +1391,25 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_token: ConversationTokenCallbackType | None,
     ) -> tuple[bool, LLMResponse]:
         runtime = conversation._flowpilot_runtime
+        gateway_batches = runtime.gateway_batches if runtime is not None else []
+        if gateway_batches:
+            batches = self._flowpilot_reconstruct_gateway_batches(
+                gateway_batches, conversation=conversation, state=state
+            )
+            await self._flowpilot_async_sync_batches(
+                runtime,
+                batches,
+                conversation=conversation,
+                on_event=on_event,
+                barrier_reason="terminal_response",
+                parent_llm_call_id=str(gateway_batches[-1]["parent_llm_call_id"]),
+            )
+            return False, llm_response
+        if runtime is not None and runtime.gateway_reuse_configured:
+            return False, llm_response
         if not self._flowpilot_delegation_is_safe(conversation, state, messages):
             return False, llm_response
+
         assert runtime is not None
         identity = runtime.tool_identity
         if identity is None:
@@ -1602,6 +1674,42 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             return False, current
 
+    def _flowpilot_reconstruct_gateway_batches(
+        self,
+        raw_batches: list[dict[str, Any]],
+        *,
+        conversation: LocalConversation,
+        state: ConversationState,
+    ) -> list[_FlowPilotDeferredBatch]:
+        runtime = conversation._flowpilot_runtime
+        if runtime is None:
+            raise RuntimeError("FlowPilot runtime is not enabled")
+        batches: list[_FlowPilotDeferredBatch] = []
+        for raw in raw_batches:
+            response_payload = raw.get("response")
+            decisions = raw.get("decisions")
+            if not isinstance(response_payload, dict) or not isinstance(
+                decisions, list
+            ):
+                raise ValueError("FlowPilot gateway batch is malformed")
+            if "choices" in response_payload:
+                response = self.llm._build_completion_result(
+                    ModelResponse(**response_payload)
+                )
+            else:
+                response = self.llm._build_responses_result(
+                    ResponsesAPIResponse(**response_payload)
+                )
+            actions = self._flowpilot_capture_actions(
+                response, conversation=conversation, state=state
+            )
+            if actions is None or len(actions) != len(decisions):
+                raise ValueError("FlowPilot gateway batch does not match Tool Calls")
+            batches.append(
+                self._flowpilot_cached_batch(response, actions, decisions, runtime)
+            )
+        return batches
+
     def _flowpilot_delegation_is_safe(
         self,
         conversation: LocalConversation,
@@ -1612,6 +1720,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         return bool(
             runtime is not None
             and runtime.config.deferred_context_enabled
+            and all(
+                name in self.tools_map
+                and (annotations := self.tools_map[name].annotations) is not None
+                and annotations.readOnlyHint is True
+                for name in runtime.config.reusable_web_tools
+            )
             and self.llm.native_tool_calling
             and not self.llm.stream
             and not self.llm.is_subscription
@@ -2184,10 +2298,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "as it was checked earlier."
             )
 
+        assert action_event.action is not None
         # Execute actions. FlowPilot observes only this real local boundary.
         if conversation._flowpilot_runtime is not None:
             reused = conversation._flowpilot_runtime.resolve_reuse(
-                action_event, tool.observation_type
+                action_event,
+                tool.observation_type,
+                input_schema_digest=(
+                    payload_digest(tool.mcp_tool.inputSchema)
+                    if isinstance(tool, MCPToolDefinition)
+                    else None
+                ),
             )
             if reused is not None:
                 return [

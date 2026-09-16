@@ -371,6 +371,10 @@ class LocalConversation(BaseConversation):
                 self._flowpilot_batch_events.append(e)
             else:
                 self._state.append_event(e)
+                if self._flowpilot_runtime is not None and isinstance(
+                    e, ObservationEvent
+                ):
+                    self._flowpilot_runtime.observation_committed(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -1468,6 +1472,10 @@ class LocalConversation(BaseConversation):
         identity = self._flowpilot_runtime.active_identity
         if identity is not None:
             self._flowpilot_runtime.commit_request(identity)
+
+    def accept_flowpilot_gateway_response(self, llm_response: Any) -> None:
+        if self._flowpilot_runtime is not None:
+            self._flowpilot_runtime.accept_gateway_response(llm_response)
 
     def abort_flowpilot_llm_call(self, call_context: LLMCallContext) -> None:
         if self._flowpilot_runtime is None or not call_context.flowpilot_headers:

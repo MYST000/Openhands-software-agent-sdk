@@ -1,0 +1,2 @@
+{"decision": "allow", "hook": "stop", "project_dir": "/home/liyachen/openhands/software-agent-sdk", "reason": "deep_search_lightweight_stop", "schema_version": 1, "session_id": "54cfc075-2a08-4303-ae28-8d6842952efa", "timestamp": "2026-09-12T03:37:53.734846+00:00"}
+{"decision": "allow", "hook": "stop", "project_dir": "/home/liyachen/openhands/software-agent-sdk", "reason": "deep_search_lightweight_stop", "schema_version": 1, "session_id": "58f9ed73-054d-4c72-8e1a-4480500aca02", "timestamp": "2026-09-12T06:24:35.096216+00:00"}
