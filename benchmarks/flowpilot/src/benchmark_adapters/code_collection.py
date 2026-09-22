@@ -42,9 +42,13 @@ def select_lcb_records(paths, task_ids, *, revision, checker_source):
     return [found[task_id] for task_id in task_ids]
 
 
-def load_selected(config, task_ids, checker_path=None):
+def load_selected(config, task_ids, checker_path=None, *, check_isolation=True):
     task_ids = checked_ids(task_ids)
-    source = private_controller_directory(config.dataset.path)
+    source = (
+        private_controller_directory(config.dataset.path)
+        if check_isolation
+        else Path(config.dataset.path).resolve()
+    )
     if config.dataset.kind == "quixbugs":
         actual = subprocess.check_output(
             ["git", "-C", str(source), "rev-parse", "HEAD"], text=True

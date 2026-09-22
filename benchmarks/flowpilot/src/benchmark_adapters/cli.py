@@ -77,10 +77,10 @@ def doctor(config, *, offline=False, tasks=()):
     check("dataset", data_check)
     check("sdk", sdk_check)
     if config.dataset.kind != "swe":
-        from .retrieval import RetrievalEnvironment
+        from .native_browsecomp import create_retrieval_environment
 
         def index_check():
-            env = RetrievalEnvironment(config)
+            env = create_retrieval_environment(config)
             try:
                 return env.prepare()
             finally:
@@ -92,6 +92,7 @@ def doctor(config, *, offline=False, tasks=()):
 
             def docker_check():
                 import docker
+                from docker.errors import ImageNotFound
 
                 client = docker.from_env(timeout=5)
                 try:
@@ -101,7 +102,7 @@ def doctor(config, *, offline=False, tasks=()):
                         image = image_name(task, config.docker.image_template)
                         try:
                             client.images.get(image)
-                        except docker.errors.ImageNotFound:
+                        except ImageNotFound:
                             missing.append(image)
                     if missing and not config.docker.pull_missing:
                         raise ValueError(
@@ -315,7 +316,9 @@ def main(argv=None):
         help="Execute official evaluation/image build; otherwise write a plan",
     )
     parser.add_argument(
-        "--corpus", type=Path, help="JSONL corpus for build-index; format in README"
+        "--corpus",
+        type=Path,
+        help="Canonical JSONL, official Hotpot bz2 shard directory, or BrowseComp Parquet directory",
     )
     args = parser.parse_args(argv)
     try:
@@ -393,6 +396,7 @@ def main(argv=None):
             if config.evaluation.namespace == "none":
                 raise ValueError("Use build-images --execute for local SWE images")
             import docker
+            from docker.errors import ImageNotFound
 
             client = docker.from_env(timeout=600)
             try:
@@ -402,7 +406,7 @@ def main(argv=None):
                     try:
                         client.images.get(name)
                         print("EXISTS " + name, flush=True)
-                    except docker.errors.ImageNotFound:
+                    except ImageNotFound:
                         print("PULL " + name, flush=True)
                         client.images.pull(name)
             finally:

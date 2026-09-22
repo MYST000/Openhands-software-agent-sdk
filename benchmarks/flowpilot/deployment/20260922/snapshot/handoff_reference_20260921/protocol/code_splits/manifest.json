@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "seed": 20260916,
+  "status": "reserved_research_groups; current collector only supports dev; formal collection requires split integration",
+  "grouping": "platform + contest ID, merged by exact statement SHA256; all historical groups remain development",
+  "stratification": "deterministic greedy squared-deviation minimization over platform/difficulty/year-quarter and total size; group integrity takes priority over exact ratios",
+  "target_ratios_for_unexposed": {
+    "fit": 0.6,
+    "tune": 0.15,
+    "calibration": 0.1,
+    "test": 0.15
+  },
+  "counts": {
+    "historical_dev": 25,
+    "fit": 205,
+    "test": 50,
+    "tune": 51,
+    "calibration": 31
+  },
+  "group_counts": {
+    "historical_dev": 8,
+    "fit": 60,
+    "test": 14,
+    "tune": 15,
+    "calibration": 11
+  },
+  "strata": {
+    "historical_dev": {
+      "atcoder/easy/2023Q2": 9,
+      "atcoder/medium/2023Q2": 10,
+      "codeforces/easy/2023Q3": 3,
+      "codeforces/medium/2023Q3": 2,
+      "codeforces/easy/2023Q4": 1
+    },
+    "fit": {
+      "atcoder/easy/2023Q2": 4,
+      "atcoder/medium/2023Q2": 4,
+      "atcoder/easy/2023Q3": 14,
+      "atcoder/medium/2023Q3": 16,
+      "atcoder/easy/2023Q4": 12,
+      "atcoder/medium/2023Q4": 12,
+      "atcoder/easy/2024Q1": 13,
+      "atcoder/medium/2024Q1": 13,
+      "atcoder/easy/2024Q2": 16,
+      "atcoder/medium/2024Q2": 11,
+      "atcoder/easy/2024Q3": 15,
+      "atcoder/medium/2024Q3": 14,
+      "atcoder/easy/2024Q4": 15,
+      "atcoder/medium/2024Q4": 14,
+      "atcoder/easy/2025Q1": 14,
+      "atcoder/medium/2025Q1": 14,
+      "atcoder/easy/2025Q2": 2,
+      "atcoder/medium/2025Q2": 2
+    },
+    "tune": {
+      "atcoder/easy/2023Q3": 4,
+      "atcoder/medium/2023Q3": 4,
+      "atcoder/easy/2023Q4": 4,
+      "atcoder/medium/2023Q4": 3,
+      "atcoder/easy/2024Q1": 4,
+      "atcoder/medium/2024Q1": 3,
+      "atcoder/easy/2024Q2": 4,
+      "atcoder/medium/2024Q2": 3,
+      "atcoder/easy/2024Q3": 4,
+      "atcoder/medium/2024Q3": 3,
+      "atcoder/easy/2024Q4": 4,
+      "atcoder/medium/2024Q4": 3,
+      "atcoder/easy/2025Q1": 4,
+      "atcoder/medium/2025Q1": 4
+    },
+    "calibration": {
+      "atcoder/easy/2023Q3": 2,
+      "atcoder/medium/2023Q3": 2,
+      "atcoder/easy/2023Q4": 2,
+      "atcoder/medium/2023Q4": 1,
+      "atcoder/easy/2024Q1": 3,
+      "atcoder/medium/2024Q1": 2,
+      "atcoder/easy/2024Q2": 2,
+      "atcoder/medium/2024Q2": 2,
+      "atcoder/easy/2024Q3": 2,
+      "atcoder/medium/2024Q3": 3,
+      "atcoder/easy/2024Q4": 2,
+      "atcoder/medium/2024Q4": 3,
+      "atcoder/easy/2025Q1": 2,
+      "atcoder/medium/2025Q1": 3
+    },
+    "test": {
+      "atcoder/easy/2023Q3": 4,
+      "atcoder/medium/2023Q3": 4,
+      "atcoder/easy/2023Q4": 4,
+      "atcoder/medium/2023Q4": 3,
+      "atcoder/easy/2024Q1": 4,
+      "atcoder/medium/2024Q1": 3,
+      "atcoder/easy/2024Q2": 4,
+      "atcoder/medium/2024Q2": 3,
+      "atcoder/easy/2024Q3": 3,
+      "atcoder/medium/2024Q3": 4,
+      "atcoder/easy/2024Q4": 3,
+      "atcoder/medium/2024Q4": 4,
+      "atcoder/easy/2025Q1": 4,
+      "atcoder/medium/2025Q1": 3
+    }
+  },
+  "historical_family_only_extra_ids": [
+    "abc305_b"
+  ],
+  "quixbugs_policy": "All 40 reserved for development / repair regression / optional auxiliary fit; no QuixBugs unseen-test claim",
+  "limitations": [
+    "Contest grouping is a conservative proxy, not a certified semantic problem-family annotation.",
+    "No claim of model pretraining decontamination.",
+    "Unexposed supported pool contains AtCoder only."
+  ]
+}

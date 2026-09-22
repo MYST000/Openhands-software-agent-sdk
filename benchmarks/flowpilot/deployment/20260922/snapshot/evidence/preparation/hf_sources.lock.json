@@ -1,0 +1,204 @@
+[
+  {
+    "repo": "livecodebench/code_generation_lite",
+    "revision": "0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
+    "directory": "data/livecodebench/release_v6",
+    "files": [
+      {
+        "path": "README.md",
+        "size": 3390,
+        "git_blob": "37908db28f9e16ad36a1c6dfb5c30201cc325f99",
+        "sha256": null
+      },
+      {
+        "path": "test.jsonl",
+        "size": 1252609773,
+        "git_blob": "87e6967e48b790bbff689d0686510ec02a118390",
+        "sha256": "2bd02b38beb48e8c46b5b9987095d999ff38cd8efc255ea5d58974317c48f63f"
+      },
+      {
+        "path": "test2.jsonl",
+        "size": 713377060,
+        "git_blob": "8acb5b3cd86af57731aa52196d8d6181c76a245e",
+        "sha256": "095df7c5daf15f882c51a9deb84085cff1e073495a5dbcf95015a564d485f3a3"
+      },
+      {
+        "path": "test3.jsonl",
+        "size": 623360766,
+        "git_blob": "d6f3bfd86084f0f90c71c7f5521cfd39c50f2c5a",
+        "sha256": "28ed26cc83363ce3f1fe2d5fad9f8393077beb1907b167a31bd3b32f80801b79"
+      },
+      {
+        "path": "test4.jsonl",
+        "size": 1204644685,
+        "git_blob": "1880ad0c0a2b9fe23e51e21b575c8556ecf673ec",
+        "sha256": "d711138ddaebfcf5f8ec6a4283ee677298c0f5c5d374a235af92aaf0584510da"
+      },
+      {
+        "path": "test5.jsonl",
+        "size": 557699297,
+        "git_blob": "aa2e62b753267b41235bf7810e56d14853fbcc92",
+        "sha256": "7f77571c2a6df0c2a72a3277650309f67e01e0008e18117e624633df53f81214"
+      },
+      {
+        "path": "test6.jsonl",
+        "size": 134303240,
+        "git_blob": "f862a72b62f61fb9592351329bd4cd0d2d468efa",
+        "sha256": "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
+      }
+    ]
+  },
+  {
+    "repo": "Tevatron/browsecomp-plus",
+    "revision": "144cff8e35b5eaef7e526346aa60774a9deb941f",
+    "directory": "data/browsecomp_plus/questions",
+    "files": [
+      {
+        "path": ".gitattributes",
+        "size": 2461,
+        "git_blob": "1ef325f1b111266a6b26e0196871bd78baa8c2f3",
+        "sha256": null
+      },
+      {
+        "path": "README.md",
+        "size": 6165,
+        "git_blob": "fae3cb4fa14c442679edd8ccc5ca166541b3b119",
+        "sha256": null
+      },
+      {
+        "path": "data/test-00000-of-00006.parquet",
+        "size": 508023004,
+        "git_blob": "fe4cd4e18b632961d9d9aea0dcdbb6a7fa9f210e",
+        "sha256": "4ff9e93054eaee61b8d079a89b7ec4d02f16c9d05fa6e2fef7185b0786427a3a"
+      },
+      {
+        "path": "data/test-00001-of-00006.parquet",
+        "size": 439458597,
+        "git_blob": "92c02db85ee59b5fe712ea466c052a12bee567e5",
+        "sha256": "70cc3a6781693bb013c6855f231d15159222dddf826eb19947f6f85fcabccd4e"
+      },
+      {
+        "path": "data/test-00002-of-00006.parquet",
+        "size": 447012029,
+        "git_blob": "c3c7f260371889f1c3ae38771219c75fdbaec5bd",
+        "sha256": "f4fab28dcd293231da1b9da48680a19c7cdcb831df889d0691304de66016d194"
+      },
+      {
+        "path": "data/test-00003-of-00006.parquet",
+        "size": 415470437,
+        "git_blob": "d0c76f7039d767c1ce724c1c4ff4f5cf45dbd5c9",
+        "sha256": "e738eb7a2e76feebe60632fc279a99773586d75ce5344e205c9c53fc3071c126"
+      },
+      {
+        "path": "data/test-00004-of-00006.parquet",
+        "size": 473281326,
+        "git_blob": "fa0059df1261abed45fcd9d1301728b6f71d9096",
+        "sha256": "25535ff3d41be25d8b213b903c478f34c18082af3cbfe0a4a3925989b84c87e4"
+      },
+      {
+        "path": "data/test-00005-of-00006.parquet",
+        "size": 498182760,
+        "git_blob": "b948e003eafb23d995a7c1c191e38b13909a5ea0",
+        "sha256": "3a87031c5214322344b358db1d5f44d773b4d634ae43c60ce53ad582ccc47646"
+      }
+    ]
+  },
+  {
+    "repo": "Tevatron/browsecomp-plus-corpus",
+    "revision": "b27b02bc3e45511b8b82a13e6f90ce761df726f6",
+    "directory": "data/browsecomp_plus/corpus",
+    "files": [
+      {
+        "path": ".gitattributes",
+        "size": 2461,
+        "git_blob": "1ef325f1b111266a6b26e0196871bd78baa8c2f3",
+        "sha256": null
+      },
+      {
+        "path": "README.md",
+        "size": 3232,
+        "git_blob": "580447f000d53cb6f6bc50d15a8da97ea4ce33b1",
+        "sha256": null
+      },
+      {
+        "path": "data/train-00000-of-00007.parquet",
+        "size": 218510750,
+        "git_blob": "3add794e0f9cae2156c1fd5c9821b3ea888d614d",
+        "sha256": "7c07f9e23b1ca548110fd831714cadc67d44db5223bace6e45fcaa795d3153d0"
+      },
+      {
+        "path": "data/train-00001-of-00007.parquet",
+        "size": 271758203,
+        "git_blob": "2acda8517208db7829599c5606a7aadaa3481853",
+        "sha256": "e92d8202e0f656a85b262153dbcd22ecf80ea2d0c96d9884f9c8e25480b869ab"
+      },
+      {
+        "path": "data/train-00002-of-00007.parquet",
+        "size": 257605847,
+        "git_blob": "b0629598d656da7f25053d93e528a4f2f2a2c390",
+        "sha256": "0e4113a4503342527258d8f2c49877747435f3e65bfe1f7306b4f488c8d225fe"
+      },
+      {
+        "path": "data/train-00003-of-00007.parquet",
+        "size": 239125125,
+        "git_blob": "6b74604da17d51d9245410052c923ce01d9f5188",
+        "sha256": "0ceea5e703332a2e3ce700f641273400d84583fad84b659d3248ed06d3a9fef3"
+      },
+      {
+        "path": "data/train-00004-of-00007.parquet",
+        "size": 259072824,
+        "git_blob": "e66dfc62197b61be753757b398d404674118007f",
+        "sha256": "15b62914ddc3de6946893c770f07d5d84d29646e833ca1447955668f2b57940c"
+      },
+      {
+        "path": "data/train-00005-of-00007.parquet",
+        "size": 257706279,
+        "git_blob": "b89895d4007db00a3277c51ed637afdffc694df0",
+        "sha256": "a9a75708ad37c522e93a774e5a968a3129e12b0559971c8f950a5628e0201df0"
+      },
+      {
+        "path": "data/train-00006-of-00007.parquet",
+        "size": 257801458,
+        "git_blob": "7300cf6f47896bc80db7601151ee98ffe0969107",
+        "sha256": "290062b60c1a6ebba7d5469a37a431f0a2596e68788295284b1b2d35db07b62c"
+      }
+    ]
+  },
+  {
+    "repo": "hotpotqa/hotpot_qa",
+    "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
+    "directory": "data/hotpotqa/questions",
+    "files": [
+      {
+        "path": "README.md",
+        "size": 9522,
+        "git_blob": "d077a76e02586322b672e66325ee0e7ec4e3d949",
+        "sha256": null
+      },
+      {
+        "path": "fullwiki/test-00000-of-00001.parquet",
+        "size": 27558644,
+        "git_blob": "680f933f73902283f407ceb3c452dd3a5ab1ceab",
+        "sha256": "f6b522fed6748b33c0eaad972d53bc89c10b8afefb329629f779bfb967442cd8"
+      },
+      {
+        "path": "fullwiki/train-00000-of-00002.parquet",
+        "size": 165624177,
+        "git_blob": "6a5d2fbef658520bd04c00852c1de33030090934",
+        "sha256": "76d3bb3048a7cc73c1958107c0c5872a00d7e7d00c105b81e92f6769e7822e68"
+      },
+      {
+        "path": "fullwiki/train-00001-of-00002.parquet",
+        "size": 166162479,
+        "git_blob": "d52fc5e088d38d834acd60e2751759c90f291fa8",
+        "sha256": "713661628434fbb19fff7392e2e321e4ed107e3c7c7784d0690946e5f722763f"
+      },
+      {
+        "path": "fullwiki/validation-00000-of-00001.parquet",
+        "size": 28041820,
+        "git_blob": "6567805ff270fa6f3ea137194472d1dd3a123e6d",
+        "sha256": "78933c0a31a5f7b420d4effdf4cd4eed573b28c6a3da6179dcf7a02b39e51d03"
+      }
+    ]
+  }
+]

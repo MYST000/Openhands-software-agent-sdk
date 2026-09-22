@@ -1,0 +1,36 @@
+{
+  "date": "2026-09-22",
+  "scope": "CPU adapter regression and deployment materialization; no GPU or remote experiment",
+  "pytest": {
+    "total": 241,
+    "passed": 237,
+    "skipped": [
+      {
+        "test": "test_explicit_quix_selection_restores_protocol_and_freezes_input",
+        "reason": "Local collector must probe separate task UIDs"
+      },
+      {
+        "test": "test_public_controller_source_rejected_and_new_output_is_private",
+        "reason": "Local collection privacy preflight requires root to drop UID"
+      },
+      {
+        "test": "test_real_swe_containers_do_not_share_changes",
+        "reason": "Set BENCHMARK_ADAPTERS_DOCKER_TEST_CONFIG to a prepared SWE config for real Docker acceptance"
+      },
+      {
+        "test": "test_local_pilot_executes_real_edits_as_unprivileged_user_and_exports_patch",
+        "reason": "Local pilot drops root to a dedicated unprivileged UID"
+      }
+    ]
+  },
+  "snapshot_files_verified": 38,
+  "materialization": [
+    "fresh root",
+    "idempotent rerun",
+    "custom root paths",
+    "refuse modified target"
+  ],
+  "authored_python_ruff": "passed",
+  "upstream_scoring_source": "unchanged, excluded from formatting",
+  "original_snapshot_scripts": "syntax checked, original formatting retained"
+}

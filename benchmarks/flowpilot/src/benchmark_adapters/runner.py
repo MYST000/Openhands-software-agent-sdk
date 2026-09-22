@@ -1,7 +1,9 @@
 import os
+import socket
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from .code_tasks import CODE_KINDS, export_code
 from .environment import DockerEnvironment
@@ -9,7 +11,16 @@ from .swe import SWEAdapter
 from .tracing import Budget, BudgetExceeded, TraceRecorder, write_json
 
 
-def run_task(config, task, attempt_dir, *, environment=None, run_id=None):
+def run_task(
+    config,
+    task,
+    attempt_dir,
+    *,
+    environment=None,
+    run_id=None,
+    trace_context=None,
+    load_monitor=None,
+):
     from openhands.sdk import Agent, Conversation
     from pydantic import SecretStr
 
@@ -30,20 +41,46 @@ def run_task(config, task, attempt_dir, *, environment=None, run_id=None):
         attempt_id=attempt_dir.name,
         run_id=run_id or uuid.uuid4().hex,
     )
-    recorder = TraceRecorder(attempt_dir, identity)
+    extra = trace_context or {}
+    allowed = {
+        "episode_id",
+        "replica_id",
+        "worker_slot",
+        "research_split",
+        "task_group_id",
+        "queue_position",
+        "campaign_partition",
+    }
+    if extra.keys() - allowed:
+        raise ValueError("Unsupported trace context keys")
+    identity.update(extra)
+    identity["host_id"] = socket.gethostname()
+    try:
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        boot = "unknown-boot"
+    identity["clock_domain"] = f"controller-monotonic:{identity['host_id']}:{boot}"
+    recorder = TraceRecorder(attempt_dir, identity, load_monitor=load_monitor)
+    recorder.tool_execution_profile = {
+        "tool_timeout_seconds": config.runtime.tool_timeout,
+        "max_output_chars": (
+            config.runtime.max_output_chars if is_code or config.dataset.kind == "swe" else None
+        ),
+        "intra_task_tool_concurrency": 1,
+    }
     write_json(attempt_dir / "public_task.json", task.to_dict())
     write_json(attempt_dir / "profile.json", config.to_dict())
     budget = Budget(
         config.runtime.max_tool_calls, config.runtime.max_llm_requests, config.runtime.task_timeout
     )
-    env = environment
+    env: Any = environment
     if env is None:
         env = (
             DockerEnvironment(config, task, attempt_dir / "artifacts", identity=identity)
             if config.dataset.kind == "swe"
             else None
         )
-    result = dict(
+    result: dict[str, Any] = dict(
         **identity,
         execution_status="environment_error",
         artifact_status="export_failed",
@@ -65,19 +102,30 @@ def run_task(config, task, attempt_dir, *, environment=None, run_id=None):
                     recorder.identity[key] = result[key] = metadata[key]
             recorder.emit("environment_ready", metadata=metadata)
         else:
-            from .retrieval import RetrievalEnvironment
+            from .native_browsecomp import create_retrieval_environment
 
-            env = RetrievalEnvironment(config)
+            if env is None:
+                env = create_retrieval_environment(config)
             metadata = env.prepare()
             prepared = True
             recorder.emit("environment_ready", metadata=metadata)
         result["execution_status"] = "llm_error"
+        extra_body = {
+            name: getattr(config.llm, name)
+            for name in ("top_k", "presence_penalty", "min_p", "repetition_penalty")
+            if getattr(config.llm, name) is not None
+        }
+        if config.llm.enable_thinking is not None:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": config.llm.enable_thinking}
         llm = RecordedLLM(
             model=config.llm.model,
             base_url=config.llm.base_url,
             api_key=SecretStr(os.environ.get(config.llm.api_key_env, "dummy")),
             usage_id="actor",
             temperature=config.llm.temperature,
+            top_p=config.llm.top_p,
+            seed=config.llm.seed,
+            litellm_extra_body=extra_body,
             max_output_tokens=config.llm.max_output_tokens,
             timeout=config.llm.timeout,
             num_retries=config.llm.num_retries,
@@ -209,6 +257,7 @@ def run_task(config, task, attempt_dir, *, environment=None, run_id=None):
             unbind(binding_key)
         if env is not None:
             try:
+                cleanup = None
                 for cleanup_attempt in range(2):
                     try:
                         cleanup = env.close()

@@ -1,5 +1,7 @@
+import contextlib
 import hashlib
 import json
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -52,17 +54,28 @@ class Budget:
             raise BudgetExceeded(self.reason)
         self.requests += 1
 
+    def snapshot(self):
+        return {
+            "max_tools": self.max_tools,
+            "max_requests": self.max_requests,
+            "tools_used": self.tools,
+            "requests_used": self.requests,
+            "remaining_seconds": self.remaining(),
+        }
+
     def remaining(self):
         return max(0.01, self.deadline - time.monotonic())
 
 
 class TraceRecorder:
-    def __init__(self, directory, identity):
+    def __init__(self, directory, identity, load_monitor=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.blobs = self.directory / "blobs"
         self.blobs.mkdir(exist_ok=True)
         self.identity = identity.copy()
+        self.load_monitor = load_monitor
+        self.tool_execution_profile = {}
         self._file = (self.directory / "events.jsonl").open("a", encoding="utf-8")
         self._lock = threading.RLock()
         self.seq = 0
@@ -97,6 +110,44 @@ class TraceRecorder:
             path.write_bytes(encoded)
         return {"path": "blobs/" + path.name, "sha256": digest}
 
+    def activity(self, phase):
+        return (
+            self.load_monitor.activity(phase)
+            if self.load_monitor is not None
+            else contextlib.nullcontext()
+        )
+
+    def t0_features(self):
+        sampled = time.monotonic_ns()
+        try:
+            loads = os.getloadavg()
+        except OSError:
+            loads = (None, None, None)
+        available = None
+        try:
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+        except (OSError, ValueError):
+            pass
+        try:
+            affinity = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            affinity = None
+        return {
+            "schema_version": 1,
+            "client_load": self.load_monitor.snapshot() if self.load_monitor is not None else None,
+            "host": {
+                "sampled_monotonic_ns": sampled,
+                "load_avg_1m": loads[0],
+                "load_avg_5m": loads[1],
+                "load_avg_15m": loads[2],
+                "cpu_count": os.cpu_count(),
+                "affinity_cpu_count": affinity,
+                "mem_available_bytes": available,
+            },
+        }
+
     def request(self, request_id, payload, **metadata):
         # Only transport-level credentials are omitted; tool argument schemas are data.
         private_keys = {
@@ -112,7 +163,12 @@ class TraceRecorder:
         }
         public = {k: v for k, v in payload.items() if k not in private_keys}
         self.emit(
-            "llm_request_prepared", request_id=request_id, request=self.blob(public), **metadata
+            "llm_request_prepared",
+            request_id=request_id,
+            request=self.blob(public),
+            t0_features=self.t0_features(),
+            tool_execution_profile=self.tool_execution_profile,
+            **metadata,
         )
 
     def response_decision(self, request_id, response):
@@ -171,7 +227,7 @@ class TraceRecorder:
                 llm_response_id=response_id,
             )
             if event.action is not None:
-                self.pending[tool].append(link)
+                self.pending[tool].append({**link, "submitted_monotonic_ns": time.monotonic_ns()})
             else:
                 self.emit("tool_not_executed", tool_name=tool, reason="invalid_action", **link)
             self.emit("tool_proposed", tool_name=tool, action=data, **link)
@@ -189,14 +245,25 @@ class TraceRecorder:
         elif kind in ("ConversationErrorEvent", "AgentErrorEvent"):
             self.error_codes.append(data.get("code", kind))
 
-    def start_tool(self, name, arguments):
+    def start_tool(self, name, arguments, *, effective_arguments=None):
         link = (
             self.pending[name].popleft()
             if self.pending[name]
             else {"tool_call_id": None, "request_id": None}
         )
         self.executed_counts[name] += 1
-        self.emit("tool_start", tool_name=name, arguments=arguments, **link)
+        submitted = link.get("submitted_monotonic_ns")
+        self.emit(
+            "tool_start",
+            tool_name=name,
+            arguments=arguments,
+            effective_arguments=effective_arguments,
+            proposal_to_executor_ms=(time.monotonic_ns() - submitted) / 1e6
+            if submitted is not None
+            else None,
+            queue_duration_ms=None,
+            **link,
+        )
         return link
 
     def close(self):

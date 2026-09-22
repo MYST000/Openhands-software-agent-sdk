@@ -7,7 +7,7 @@ name = "flowpilot-benchmark-adapters"
 version = "0.2.0"
 description = "Benchmark collection extension maintained inside the MYST000 OpenHands SDK repository"
 requires-python = ">=3.12"
-dependencies = ["pyarrow>=16", "docker>=7,<8"]
+dependencies = ["pyarrow>=16", "docker>=7,<8", "ujson>=5,<6"]
 
 [project.scripts]
 benchmark-adapters = "benchmark_adapters.cli:main"

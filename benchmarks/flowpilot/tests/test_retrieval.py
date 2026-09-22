@@ -29,8 +29,10 @@ def test_fixed_index_preserves_sentence_ids_and_handles_literal_queries(tmp_path
         assert document["sentences"] == [[1, "Second alpha."]]
         answer = parse_hotpot_answer('{"answer":"yes","supporting_facts":[["Alpha",1]]}', env)
         assert answer["sp"] == [["Alpha", 1]]
-        with pytest.raises(ValueError):
-            parse_hotpot_answer('{"answer":"yes","supporting_facts":[["Alpha",99]]}', env)
+        wrong_citation = parse_hotpot_answer(
+            '{"answer":"yes","supporting_facts":[["Alpha",99]]}', env
+        )
+        assert wrong_citation == {"answer": "yes", "sp": [["Alpha", 99]]}
     finally:
         env.close()
     bad = RetrievalEnvironment(

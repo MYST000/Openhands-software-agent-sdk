@@ -13,6 +13,14 @@ class SearchAction(Action):
     top_k: int = Field(default=5, ge=1, le=20)
 
 
+class NativeSearchAction(Action):
+    query: str
+
+
+class NativeGetDocumentAction(Action):
+    docid: str
+
+
 class HotpotReadAction(Action):
     doc_id: str
     start_sentence: int = Field(default=0, ge=0)
@@ -34,40 +42,92 @@ class RetrievalExecutor(ToolExecutor):
 
     def __call__(self, action, conversation=None):
         b = self.binding
-        b.budget.tool()
-        link = b.recorder.start_tool(self.name, action.model_dump(mode="json"))
-        start = time.monotonic_ns()
+        native = b.environment.config.retrieval.backend == "browsecomp_mcp"
+        arguments = action.model_dump(mode="json")
+        if native:
+            arguments = (
+                {"query": action.query} if self.name == "search" else {"docid": action.docid}
+            )
         try:
-            if self.name == "search":
-                data = b.environment.search(action.query, action.top_k)
-                b.recorder.retrieved_docids.update(r["docid"] for r in data)
-            elif self.name == "read_document":
-                data = b.environment.read(
-                    action.doc_id,
-                    start_sentence=action.start_sentence,
-                    max_sentences=action.max_sentences,
-                )
+            b.budget.tool()
+        except Exception:
+            b.recorder.emit(
+                "tool_not_executed",
+                tool_name=self.name,
+                reason=b.budget.reason,
+                arguments=arguments,
+            )
+            raise
+        link = b.recorder.start_tool(self.name, arguments)
+        start = time.monotonic_ns()
+        response = None
+        try:
+            with (
+                b.recorder.activity("tool"),
+                b.environment.operation_timeout(min(b.tool_timeout, b.budget.remaining())),
+            ):
+                if native:
+                    response = b.environment.call_tool(self.name, arguments)
+                    data = response.data
+                    if self.name == "search" and isinstance(data, list):
+                        b.recorder.retrieved_docids.update(
+                            str(row["docid"])
+                            for row in data
+                            if isinstance(row, dict) and "docid" in row
+                        )
+                    elif self.name == "get_document" and isinstance(data, dict) and "docid" in data:
+                        b.recorder.retrieved_docids.add(str(data["docid"]))
+                elif self.name == "search":
+                    data = b.environment.search(action.query, action.top_k)
+                    b.recorder.retrieved_docids.update(r["docid"] for r in data)
+                elif self.name == "read_document":
+                    data = b.environment.read(
+                        action.doc_id,
+                        start_sentence=action.start_sentence,
+                        max_sentences=action.max_sentences,
+                    )
+                    b.recorder.retrieved_docids.add(action.doc_id)
+                else:
+                    data = b.environment.read(action.docid, offset=action.offset)
+                    b.recorder.retrieved_docids.add(action.docid)
+            executor_duration_ms = None if native else (time.monotonic_ns() - start) / 1e6
+            if native:
+                assert response is not None
+                text = response.text
             else:
-                data = b.environment.read(action.docid, offset=action.offset)
-            text = json.dumps(data, ensure_ascii=False)
+                text = json.dumps(data, ensure_ascii=False)
+            observation = RetrievalObservation.from_text(text)
             b.recorder.emit(
                 "tool_end",
                 tool_name=self.name,
                 **link,
-                executor_duration_ms=(time.monotonic_ns() - start) / 1e6,
-                clock_domain="host-executor",
+                executor_duration_ms=executor_duration_ms,
+                round_trip_ms=(time.monotonic_ns() - start) / 1e6,
+                effective_arguments=arguments,
+                queue_wait_ms=None,
+                executor_clock_domain=None if native else "host-executor",
                 model_observation=text,
+                output_bytes=len(text.encode("utf-8")),
+                timed_out=False,
             )
-            return RetrievalObservation.from_text(text)
+            return observation
         except Exception as exc:
+            text = str(exc)
+            observation = RetrievalObservation.from_text(text, is_error=True)
             b.recorder.emit(
                 "tool_error",
                 tool_name=self.name,
                 **link,
-                executor_duration_ms=(time.monotonic_ns() - start) / 1e6,
+                executor_duration_ms=None if native else (time.monotonic_ns() - start) / 1e6,
+                round_trip_ms=(time.monotonic_ns() - start) / 1e6,
+                effective_arguments=arguments,
+                queue_wait_ms=None,
+                executor_clock_domain=None if native else "host-executor",
+                model_observation=text,
                 error_type=type(exc).__name__,
+                timed_out=isinstance(exc, TimeoutError),
             )
-            return RetrievalObservation.from_text(str(exc), is_error=True)
+            return observation
 
 
 class SearchTool(ToolDefinition):
@@ -76,9 +136,15 @@ class SearchTool(ToolDefinition):
         b = get_binding(params["binding_key"])
         return [
             cls(
-                action_type=SearchAction,
+                action_type=NativeSearchAction
+                if b.environment.config.retrieval.backend == "browsecomp_mcp"
+                else SearchAction,
                 observation_type=RetrievalObservation,
-                description=f"Search the fixed corpus. Return docid, title, URL and snippet. top_k must be <= {b.environment.config.retrieval.top_k}.",
+                description=(
+                    b.environment.tool_definitions["search"].description
+                    if b.environment.config.retrieval.backend == "browsecomp_mcp"
+                    else f"Search the fixed corpus. Return docid, title, URL and snippet. top_k must be <= {b.environment.config.retrieval.top_k}."
+                ),
                 executor=RetrievalExecutor(b, cls.name),
             )
         ]
@@ -104,9 +170,15 @@ class GetDocumentTool(ToolDefinition):
         b = get_binding(params["binding_key"])
         return [
             cls(
-                action_type=BrowseReadAction,
+                action_type=NativeGetDocumentAction
+                if b.environment.config.retrieval.backend == "browsecomp_mcp"
+                else BrowseReadAction,
                 observation_type=RetrievalObservation,
-                description="Read a fixed-corpus document page by docid. offset is a character offset. Follow next_offset when truncated is true.",
+                description=(
+                    b.environment.tool_definitions["get_document"].description
+                    if b.environment.config.retrieval.backend == "browsecomp_mcp"
+                    else "Read a fixed-corpus document page by docid. offset is a character offset. Follow next_offset when truncated is true."
+                ),
                 executor=RetrievalExecutor(b, cls.name),
             )
         ]

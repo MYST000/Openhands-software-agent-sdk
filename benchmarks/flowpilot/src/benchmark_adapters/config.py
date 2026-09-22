@@ -27,6 +27,13 @@ class LLMConfig:
     base_url: str = "http://127.0.0.1:8000/v1"
     api_key_env: str = "LLM_API_KEY"
     temperature: float = 0.0
+    top_p: float | None = None
+    top_k: int | None = None
+    seed: int | None = None
+    presence_penalty: float | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
+    enable_thinking: bool | None = None
     max_output_tokens: int = 4096
     timeout: int = 180
     num_retries: int = 2
@@ -61,6 +68,8 @@ class DockerConfig:
 
 @dataclass(frozen=True)
 class RetrievalConfig:
+    backend: str = "sqlite"
+    mcp_url: str = "http://127.0.0.1:8123/mcp"
     index_path: str = ""
     corpus_revision: str = ""
     top_k: int = 5
@@ -121,6 +130,16 @@ def load_config(path: str | Path) -> Config:
         defaults = cls()
         for key, value in values.items():
             expected = type(getattr(defaults, key))
+            if section == "llm" and getattr(defaults, key) is None:
+                expected = {
+                    "top_p": float,
+                    "top_k": int,
+                    "seed": int,
+                    "presence_penalty": float,
+                    "min_p": float,
+                    "repetition_penalty": float,
+                    "enable_thinking": bool,
+                }[key]
             if expected is float and type(value) in (int, float):
                 continue
             if type(value) is not expected:
@@ -173,6 +192,13 @@ def load_config(path: str | Path) -> Config:
         )
     if cfg.dataset.split not in {"train", "dev", "test"}:
         raise ConfigurationError("Unknown dataset split")
+    if cfg.retrieval.backend not in {"sqlite", "browsecomp_mcp"}:
+        raise ConfigurationError("Unknown retrieval backend")
+    if cfg.retrieval.backend == "browsecomp_mcp":
+        if cfg.dataset.kind != "browsecomp":
+            raise ConfigurationError("The official BrowseComp MCP backend only supports BrowseComp")
+        if not cfg.retrieval.mcp_url.startswith(("http://", "https://")):
+            raise ConfigurationError("retrieval.mcp_url must be an HTTP(S) MCP endpoint")
     if cfg.dataset.kind == "browsecomp" and cfg.dataset.split != "test":
         raise ConfigurationError("BrowseComp-Plus question data only has test split")
     if not cfg.dataset.path or not cfg.dataset.revision:
@@ -184,6 +210,18 @@ def load_config(path: str | Path) -> Config:
                 raise ConfigurationError(f"{f.name} must be positive")
     if cfg.llm.max_output_tokens <= 0 or cfg.llm.timeout <= 0 or cfg.llm.num_retries < 0:
         raise ConfigurationError("Invalid LLM token/timeout/retry budget")
+    if cfg.llm.temperature < 0:
+        raise ConfigurationError("temperature must be nonnegative")
+    for name in ("top_p", "min_p"):
+        value = getattr(cfg.llm, name)
+        if value is not None and not 0 <= value <= 1:
+            raise ConfigurationError(f"{name} must be in 0..1")
+    if cfg.llm.top_k is not None and cfg.llm.top_k < -1:
+        raise ConfigurationError("top_k must be at least -1")
+    if cfg.llm.repetition_penalty is not None and cfg.llm.repetition_penalty <= 0:
+        raise ConfigurationError("repetition_penalty must be positive")
+    if cfg.llm.presence_penalty is not None and not -2 <= cfg.llm.presence_penalty <= 2:
+        raise ConfigurationError("presence_penalty must be in -2..2")
     if not cfg.llm.native_tool_calling:
         raise ConfigurationError("Prediction tracing requires llm.native_tool_calling=true")
     if cfg.runtime.sdk_commit != SDK_COMMIT:

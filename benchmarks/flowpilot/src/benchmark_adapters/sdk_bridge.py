@@ -44,6 +44,7 @@ class RecordedLLM(LLM):
             logical_request_id=self._logical_id,
             request_role="actor",
             snapshot_stage="litellm_transport_input",
+            budget_at_t0=self._budget.snapshot(),
         )
         return payload
 
@@ -51,8 +52,9 @@ class RecordedLLM(LLM):
         start = time.monotonic_ns()
         self._request_id = ""
         try:
-            response = super()._transport_call(**kwargs)
             assert self._recorder is not None
+            with self._recorder.activity("llm"):
+                response = super()._transport_call(**kwargs)
             self._recorder.response_requests[str(response.id)] = self._request_id
             self._recorder.emit(
                 "llm_response",
@@ -146,16 +148,27 @@ class ContainerExecutor(ToolExecutor):
             )
             raise
         arguments = action.model_dump(mode="json")
-        link = b.recorder.start_tool(self.tool_name, arguments)
         timeout = min(b.tool_timeout, b.budget.remaining())
         if self.tool_name in {"swe_terminal", "code_terminal"}:
             command = action.command
             timeout = min(timeout, action.timeout)
         else:
             command = file_operation_command(b.environment.repo_dir, arguments)
+        link = b.recorder.start_tool(
+            self.tool_name,
+            arguments,
+            effective_arguments={
+                **arguments,
+                "timeout": timeout,
+                "max_output_chars": b.max_output_chars,
+            },
+        )
         start = time.monotonic_ns()
         try:
-            result = b.environment.execute(command, timeout=timeout, max_bytes=b.max_output_chars)
+            with b.recorder.activity("tool"):
+                result = b.environment.execute(
+                    command, timeout=timeout, max_bytes=b.max_output_chars
+                )
             observed = (
                 result.stdout
                 + ("\nSTDERR:\n" + result.stderr if result.stderr else "")
