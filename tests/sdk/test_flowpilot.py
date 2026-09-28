@@ -327,6 +327,52 @@ def test_child_config_preserves_root_job_and_records_parent_line() -> None:
     assert child.parent_conversation_id == "conversation-root"
 
 
+@pytest.mark.parametrize("phase", ["EMPTY", "READY", "BLOCKED", "ACTIVE"])
+def test_explicit_close_finishes_only_resolved_registered_line(phase: str) -> None:
+    runtime = FlowPilotRuntime(_config(), "conversation-1")
+    runtime._registered = True
+    runtime.tail_version = 7
+    tail = {"phase": phase, "version": 7, "tail_request_id": "tail-7"}
+    with (
+        patch.object(FlowPilotRuntime, "_find_authoritative_tail", return_value=tail),
+        patch.object(FlowPilotRuntime, "_post_control") as post,
+    ):
+        if phase in {"ACTIVE", "BLOCKED"}:
+            with pytest.raises(RuntimeError, match="unresolved"):
+                runtime._finish_line()
+            post.assert_not_called()
+            assert runtime._registered
+        else:
+            runtime._finish_line()
+            runtime._finish_line()
+            post.assert_called_once()
+            path, payload = post.call_args.args
+            assert path.endswith("/finish")
+            assert payload["expected_tail_version"] == 7
+            assert payload["tail_request_id"] == "tail-7"
+            assert not runtime._registered
+
+
+def test_close_cannot_retire_newer_tail() -> None:
+    runtime = FlowPilotRuntime(_config(), "conversation-1")
+    runtime._registered = True
+    with (
+        patch.object(
+            FlowPilotRuntime,
+            "_find_authoritative_tail",
+            return_value={
+                "phase": "READY",
+                "version": 1,
+                "tail_request_id": "new-tail",
+            },
+        ),
+        patch.object(FlowPilotRuntime, "_post_control") as post,
+    ):
+        with pytest.raises(RuntimeError, match="replaced tail"):
+            runtime._finish_line()
+        post.assert_not_called()
+
+
 def test_enabled_configuration_requires_serial_tool_execution() -> None:
     _config().validate(tool_concurrency_limit=1)
     with pytest.raises(ValueError, match="tool_concurrency_limit == 1"):
@@ -482,7 +528,10 @@ def test_local_conversation_enables_only_with_serial_tools(tmp_path) -> None:
             flowpilot=_config(),
         )
     assert conversation.agent.llm.base_url == "http://flowpilot:9000/v1"
-    conversation.close()
+    with patch.object(FlowPilotRuntime, "_finish_line") as finish:
+        conversation.close()
+        conversation.close()
+        finish.assert_called_once()
 
     with pytest.raises(ValueError, match="tool_concurrency_limit == 1"):
         LocalConversation(

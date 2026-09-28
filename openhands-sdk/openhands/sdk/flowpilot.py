@@ -26,6 +26,7 @@ from openhands.sdk.flowpilot_reuse import (
 )
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.definition import MCPToolAction
 from openhands.sdk.tool.schema import Observation
 from openhands.sdk.utils.cipher import Cipher
 
@@ -267,6 +268,7 @@ class FlowPilotRuntime:
     _sync_reference: FlowPilotDCSReference | None = None
     _dependency_version: int = 0
     _waiting_on_lines: set[str] = field(default_factory=set)
+    _registered: bool = False
 
     _RECOVERY_DIR = "flowpilot/recovery"
 
@@ -713,6 +715,7 @@ class FlowPilotRuntime:
                     "FlowPilot cannot resume a line with an in-progress tail"
                 )
             self.tail_version = version
+        self._registered = True
         if self.config.deferred_context_enabled:
             reconciled = self.reconcile_deferred_context(
                 context_cursor=base_context_cursor,
@@ -766,6 +769,36 @@ class FlowPilotRuntime:
                 raise RuntimeError(
                     "FlowPilot DCS state conflicts with the authoritative Agent history"
                 )
+
+    def _finish_line(self) -> None:
+        """Retire the registered line when its conversation is explicitly closed."""
+        if not self._registered:
+            return
+        with self._lock:
+            if self._active_identity is not None or self._active_tools:
+                raise RuntimeError("FlowPilot cannot finish while local work is active")
+            version = self.tail_version
+            identity = self._tool_identity
+        tail = self._find_authoritative_tail()
+        if tail is not None:
+            if tail.get("version") != version or (
+                identity is not None
+                and tail.get("tail_request_id") != identity.tail_request_id
+            ):
+                raise RuntimeError("FlowPilot cannot finish a replaced tail")
+            if _tail_phase(tail) not in {"EMPTY", "READY"}:
+                raise RuntimeError("FlowPilot cannot finish an unresolved line")
+            line_id = urllib.parse.quote(self.config.line_id, safe="")
+            self._post_control(
+                f"/flowpilot/v1/lines/{line_id}/finish",
+                {
+                    "job_id": self.config.job_id,
+                    "line_id": self.config.line_id,
+                    "expected_tail_version": tail["version"],
+                    "tail_request_id": tail.get("tail_request_id"),
+                },
+            )
+        self._registered = False
 
     def report_dependency(
         self, prerequisite_line_id: str, *, actual_wait: bool
@@ -2274,9 +2307,9 @@ def _redact_provider_message(message: dict[str, Any]) -> dict[str, Any]:
 def _execution_tool_arguments(action: ActionEvent) -> dict[str, Any]:
     if action.action is None:
         raise ValueError("Tool Action is missing")
+    if isinstance(action.action, MCPToolAction):
+        return action.action.to_mcp_arguments()
     value = action.action.model_dump(mode="json", exclude={"kind", "security_risk"})
-    if action.tool_name.startswith("tavily-") and isinstance(value.get("data"), dict):
-        return value["data"]
     return value
 
 

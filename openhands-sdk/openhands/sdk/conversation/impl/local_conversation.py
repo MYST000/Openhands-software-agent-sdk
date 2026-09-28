@@ -2601,6 +2601,13 @@ class LocalConversation(BaseConversation):
                             f"Error closing executor for tool '{tool.name}': {e}"
                         )
 
+        runtime = getattr(self, "_flowpilot_runtime", None)
+        if runtime is not None:
+            try:
+                runtime._finish_line()
+            except Exception as exc:
+                logger.warning("FlowPilot line finish failed: %s", type(exc).__name__)
+
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
 
