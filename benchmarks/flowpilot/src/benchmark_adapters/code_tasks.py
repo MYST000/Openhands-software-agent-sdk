@@ -5,6 +5,7 @@ CodeBundle.private is controller-only. Never serialize the bundle into actor art
 
 import base64
 import copy
+import hashlib
 import io
 import json
 import pickle
@@ -231,6 +232,7 @@ class LiveCodeBenchAdapter:
                 "difficulty": row["difficulty"],
                 "platform": row["platform"],
                 "contest_date": row["contest_date"],
+                "statement_sha256": hashlib.sha256(row["question_content"].encode()).hexdigest(),
                 "solution_path": "solution.py",
                 "test_visibility": "public examples only",
             },

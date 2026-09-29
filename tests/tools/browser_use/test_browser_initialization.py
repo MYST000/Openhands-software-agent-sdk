@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from browser_use.browser.profile import ProxySettings
 
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 from openhands.tools.utils.timeout import TimeoutError
@@ -107,10 +108,59 @@ class TestBrowserInitialization:
                 "allowed_domains": ["example.com"],
                 "executable_path": "/usr/bin/chromium",
                 "chromium_sandbox": True,  # Enabled for non-root
+                "proxy": ProxySettings(
+                    server="http://127.0.0.1:11001",
+                    bypass="localhost,127.0.0.1,::1",
+                ),
                 "custom_param": "test",
             }
 
             assert executor._config == expected_config
+
+    def test_initialization_reads_browser_proxy_from_environment(self, monkeypatch):
+        """Test that Chromium receives the dedicated browser proxy config."""
+        mock_server = MagicMock()
+        monkeypatch.setenv("OH_BROWSER_PROXY", "http://127.0.0.1:11001")
+        monkeypatch.setenv("OH_BROWSER_PROXY_BYPASS", "localhost,127.0.0.1,::1")
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                return_value="/usr/bin/chromium",
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+        ):
+            executor = BrowserToolExecutor()
+
+        assert executor._config["proxy"] == ProxySettings(
+            server="http://127.0.0.1:11001",
+            bypass="localhost,127.0.0.1,::1",
+        )
+
+    def test_explicit_browser_proxy_overrides_environment(self, monkeypatch):
+        """Test that callers can override the environment proxy explicitly."""
+        mock_server = MagicMock()
+        monkeypatch.setenv("OH_BROWSER_PROXY", "http://127.0.0.1:11001")
+        explicit_proxy = ProxySettings(server="http://proxy.example:8080")
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                return_value="/usr/bin/chromium",
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+        ):
+            executor = BrowserToolExecutor(proxy=explicit_proxy)
+
+        assert executor._config["proxy"] is explicit_proxy
 
     def test_initialization_server_creation_with_timeout(self):
         """Test that server is created with correct session timeout."""

@@ -34,6 +34,7 @@ class LLMConfig:
     min_p: float | None = None
     repetition_penalty: float | None = None
     enable_thinking: bool | None = None
+    max_input_tokens: int | None = None
     max_output_tokens: int = 4096
     timeout: int = 180
     num_retries: int = 2
@@ -132,6 +133,7 @@ def load_config(path: str | Path) -> Config:
             expected = type(getattr(defaults, key))
             if section == "llm" and getattr(defaults, key) is None:
                 expected = {
+                    "max_input_tokens": int,
                     "top_p": float,
                     "top_k": int,
                     "seed": int,
@@ -192,13 +194,18 @@ def load_config(path: str | Path) -> Config:
         )
     if cfg.dataset.split not in {"train", "dev", "test"}:
         raise ConfigurationError("Unknown dataset split")
-    if cfg.retrieval.backend not in {"sqlite", "browsecomp_mcp"}:
+    if cfg.retrieval.backend not in {"sqlite", "browsecomp_mcp", "hotpot_rpc"}:
         raise ConfigurationError("Unknown retrieval backend")
     if cfg.retrieval.backend == "browsecomp_mcp":
         if cfg.dataset.kind != "browsecomp":
             raise ConfigurationError("The official BrowseComp MCP backend only supports BrowseComp")
         if not cfg.retrieval.mcp_url.startswith(("http://", "https://")):
             raise ConfigurationError("retrieval.mcp_url must be an HTTP(S) MCP endpoint")
+    if cfg.retrieval.backend == "hotpot_rpc":
+        if cfg.dataset.kind != "hotpot":
+            raise ConfigurationError("The Hotpot RPC backend only supports Hotpot")
+        if not cfg.retrieval.mcp_url.startswith(("http://", "https://")):
+            raise ConfigurationError("retrieval.mcp_url must be an HTTP(S) RPC endpoint")
     if cfg.dataset.kind == "browsecomp" and cfg.dataset.split != "test":
         raise ConfigurationError("BrowseComp-Plus question data only has test split")
     if not cfg.dataset.path or not cfg.dataset.revision:
@@ -210,6 +217,8 @@ def load_config(path: str | Path) -> Config:
                 raise ConfigurationError(f"{f.name} must be positive")
     if cfg.llm.max_output_tokens <= 0 or cfg.llm.timeout <= 0 or cfg.llm.num_retries < 0:
         raise ConfigurationError("Invalid LLM token/timeout/retry budget")
+    if cfg.llm.max_input_tokens is not None and cfg.llm.max_input_tokens <= 0:
+        raise ConfigurationError("max_input_tokens must be positive")
     if cfg.llm.temperature < 0:
         raise ConfigurationError("temperature must be nonnegative")
     for name in ("top_p", "min_p"):

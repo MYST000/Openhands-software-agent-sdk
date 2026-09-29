@@ -43,6 +43,8 @@ class RetrievalExecutor(ToolExecutor):
     def __call__(self, action, conversation=None):
         b = self.binding
         native = b.environment.config.retrieval.backend == "browsecomp_mcp"
+        rpc = b.environment.config.retrieval.backend == "hotpot_rpc"
+        remote = native or rpc
         arguments = action.model_dump(mode="json")
         if native:
             arguments = (
@@ -61,6 +63,8 @@ class RetrievalExecutor(ToolExecutor):
         link = b.recorder.start_tool(self.name, arguments)
         start = time.monotonic_ns()
         response = None
+        if remote:
+            b.environment.last_timing = {}
         try:
             with (
                 b.recorder.activity("tool"),
@@ -90,7 +94,12 @@ class RetrievalExecutor(ToolExecutor):
                 else:
                     data = b.environment.read(action.docid, offset=action.offset)
                     b.recorder.retrieved_docids.add(action.docid)
-            executor_duration_ms = None if native else (time.monotonic_ns() - start) / 1e6
+            timing = b.environment.last_timing if remote else {}
+            executor_duration_ms = (
+                timing.get("executor_duration_ms")
+                if remote
+                else (time.monotonic_ns() - start) / 1e6
+            )
             if native:
                 assert response is not None
                 text = response.text
@@ -104,25 +113,34 @@ class RetrievalExecutor(ToolExecutor):
                 executor_duration_ms=executor_duration_ms,
                 round_trip_ms=(time.monotonic_ns() - start) / 1e6,
                 effective_arguments=arguments,
-                queue_wait_ms=None,
-                executor_clock_domain=None if native else "host-executor",
+                queue_wait_ms=timing.get("queue_wait_ms"),
+                executor_timing_scope=timing.get("executor_timing_scope"),
+                executor_clock_domain=timing.get("executor_clock_domain")
+                if remote
+                else "host-executor",
                 model_observation=text,
                 output_bytes=len(text.encode("utf-8")),
                 timed_out=False,
             )
             return observation
         except Exception as exc:
+            timing = b.environment.last_timing if remote else {}
             text = str(exc)
             observation = RetrievalObservation.from_text(text, is_error=True)
             b.recorder.emit(
                 "tool_error",
                 tool_name=self.name,
                 **link,
-                executor_duration_ms=None if native else (time.monotonic_ns() - start) / 1e6,
+                executor_duration_ms=timing.get("executor_duration_ms")
+                if remote
+                else (time.monotonic_ns() - start) / 1e6,
                 round_trip_ms=(time.monotonic_ns() - start) / 1e6,
                 effective_arguments=arguments,
-                queue_wait_ms=None,
-                executor_clock_domain=None if native else "host-executor",
+                queue_wait_ms=timing.get("queue_wait_ms"),
+                executor_timing_scope=timing.get("executor_timing_scope"),
+                executor_clock_domain=timing.get("executor_clock_domain")
+                if remote
+                else "host-executor",
                 model_observation=text,
                 error_type=type(exc).__name__,
                 timed_out=isinstance(exc, TimeoutError),

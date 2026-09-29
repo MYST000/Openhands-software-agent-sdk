@@ -249,8 +249,18 @@ def prepare_campaign(campaign_path):
     policy = campaign.get("queue_policy", "seeded_shuffle")
     if policy == "seeded_shuffle":
         random.Random(campaign.get("seed", 20260921)).shuffle(jobs)
+    elif policy == "round_robin":
+        queues = {}
+        for job in jobs:
+            queues.setdefault(job["adapter"], []).append(job)
+        jobs = [
+            queue[index]
+            for index in range(max(map(len, queues.values())))
+            for queue in queues.values()
+            if index < len(queue)
+        ]
     elif policy != "ordered":
-        raise ValueError("queue_policy must be ordered or seeded_shuffle")
+        raise ValueError("queue_policy must be ordered, seeded_shuffle or round_robin")
     for position, job in enumerate(jobs):
         job["trace_context"]["queue_position"] = position
     manifest = {

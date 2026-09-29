@@ -8,7 +8,10 @@ from functools import partial
 
 from anyio.from_thread import start_blocking_portal
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from mcp.types import TextContent
+
+from .hotpot_rpc import HotpotRPCEnvironment
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class NativeBrowseCompEnvironment:
     def __init__(self, config):
         self.config = config
         self.tool_definitions = {}
+        self.last_timing = {}
         self._portal_context = None
         self._client_context = None
         self._portal = None
@@ -73,11 +77,23 @@ class NativeBrowseCompEnvironment:
 
     def call_tool(self, name, arguments):
         assert self._portal is not None and self._client is not None
+        self.last_timing = {}
         result = self._portal.call(
-            partial(self._client.call_tool, name, arguments, timeout=self._timeout)
+            partial(
+                self._client.call_tool,
+                name,
+                arguments,
+                timeout=self._timeout,
+                raise_on_error=False,
+            )
         )
+        timing = (result.meta or {}).get("flowpilot_timing", {})
+        if timing.get("schema_version") == 1 and timing.get("tool_name") == name:
+            self.last_timing = timing
         texts = [content.text for content in result.content if isinstance(content, TextContent)]
         text = "\n".join(texts)
+        if result.is_error:
+            raise ToolError(text)
         data = result.data
         if data is None and len(texts) == 1:
             try:
@@ -103,6 +119,8 @@ class NativeBrowseCompEnvironment:
 
 
 def create_retrieval_environment(config, verified_index=None):
+    if config.retrieval.backend == "hotpot_rpc":
+        return HotpotRPCEnvironment(config, verified_index=verified_index)
     if config.retrieval.backend == "browsecomp_mcp":
         return NativeBrowseCompEnvironment(config)
     from .retrieval import RetrievalEnvironment

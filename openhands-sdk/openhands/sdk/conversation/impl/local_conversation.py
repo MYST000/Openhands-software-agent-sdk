@@ -5,6 +5,7 @@ import copy
 import json
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final, TypeGuard, cast
 
@@ -47,6 +48,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.flowpilot import FlowPilotConfig, FlowPilotRuntime, context_digest
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -200,6 +202,7 @@ class LocalConversation(BaseConversation):
         observability_span_name: str = "conversation",
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
+        flowpilot: FlowPilotConfig | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -267,6 +270,33 @@ class LocalConversation(BaseConversation):
         self._cancel_token = None
         self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
+        # Create-or-resume: factory inspects BASE_STATE to decide.
+        desired_id = conversation_id or uuid.uuid4()
+        self._flowpilot = flowpilot or FlowPilotConfig()
+        if self._flowpilot.enabled:
+            conversation_key = str(desired_id)
+            self._flowpilot = replace(
+                self._flowpilot,
+                job_id=self._flowpilot.job_id or f"job-{conversation_key}",
+                line_id=self._flowpilot.line_id or f"line-{conversation_key}",
+                root_conversation_id=self._flowpilot.root_conversation_id
+                or conversation_key,
+            )
+        self._flowpilot.validate(tool_concurrency_limit=agent.tool_concurrency_limit)
+        if self._flowpilot.enabled:
+            agent = agent.model_copy(
+                update={
+                    "llm": agent.llm.model_copy(
+                        update={"base_url": self._flowpilot.llm_base_url}
+                    )
+                }
+            )
+        self._flowpilot_runtime = (
+            FlowPilotRuntime(self._flowpilot, str(desired_id))
+            if self._flowpilot.enabled
+            else None
+        )
+        self._flowpilot_batch_events: list[Event] | None = None
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -276,9 +306,6 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
-
-        # Create-or-resume: factory inspects BASE_STATE to decide
-        desired_id = conversation_id or uuid.uuid4()
 
         # Resolve client-defined tools, then register them and inject the matching
         # Tool specs into the agent so the agent can call them. Execution is
@@ -328,6 +355,9 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
+        if self._flowpilot_runtime is not None:
+            self._flowpilot_runtime.attach_file_store(self._state._fs)
+
         self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
@@ -337,7 +367,14 @@ class LocalConversation(BaseConversation):
             # regions), so updating state here is thread-safe.
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
-            self._state.append_event(e)
+            if self._flowpilot_batch_events is not None:
+                self._flowpilot_batch_events.append(e)
+            else:
+                self._state.append_event(e)
+                if self._flowpilot_runtime is not None and isinstance(
+                    e, ObservationEvent
+                ):
+                    self._flowpilot_runtime.observation_committed(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -382,6 +419,17 @@ class LocalConversation(BaseConversation):
             if token_callbacks
             else None
         )
+
+        if self._flowpilot_runtime is not None:
+            flowpilot_events = list(self._state.active_branch())
+            self._flowpilot_runtime.register(
+                context_sequence=len(flowpilot_events),
+                base_context_cursor=(
+                    flowpilot_events[-1].id if flowpilot_events else "root"
+                ),
+                context_digest=context_digest(flowpilot_events),
+                apply_recovery=self._apply_flowpilot_recovery,
+            )
 
         self.max_iteration_per_run = max_iteration_per_run
         # Hard cost ceiling (USD) for a run; None disables the budget check.
@@ -461,9 +509,89 @@ class LocalConversation(BaseConversation):
         """
 
         def wrapped(event: Event) -> None:
-            inner(self._state._stamp_parent_id(event))
+            if self._flowpilot_batch_events is not None:
+                parent = (
+                    self._flowpilot_batch_events[-1].id
+                    if self._flowpilot_batch_events
+                    else self._state._resolve_active_leaf()
+                )
+                if event.parent_id != parent:
+                    event = event.model_copy(update={"parent_id": parent})
+                inner(event)
+            else:
+                inner(self._state._stamp_parent_id(event))
 
         return cast(ConversationCallbackType, wrapped)
+
+    def _apply_flowpilot_events_atomically(
+        self,
+        events: list[Event],
+        provider_messages: tuple[dict[str, Any], ...],
+        *,
+        persist_recovery: bool = True,
+        recovery_batches: tuple[tuple[list[Event], tuple[dict[str, Any], ...]], ...]
+        | None = None,
+        recovery_batch_count: int = 1,
+    ) -> tuple[str, str]:
+        """Persist one DCS chunk without exposing a partial authoritative HEAD."""
+        prepared = self._state.stamp_event_batch(events)
+        if persist_recovery and self._flowpilot_runtime is not None:
+            self._flowpilot_runtime.persist_recovery_record(
+                messages=provider_messages,
+                events=prepared,
+                pending_batches=recovery_batches,
+                first_chunk_batch_count=recovery_batch_count,
+            )
+        prepared = self._state.prepare_event_batch(prepared)
+        self._flowpilot_batch_events = []
+        try:
+            with self._state:
+                for event in prepared:
+                    self._on_event(event)
+                queued = self._flowpilot_batch_events
+                if queued is None or len(queued) != len(prepared):
+                    raise RuntimeError(
+                        "FlowPilot callback did not queue a complete batch"
+                    )
+                self._state.commit_event_batch(queued)
+        finally:
+            self._flowpilot_batch_events = None
+        active = self._state.active_branch()
+        return active[-1].id, context_digest(active)
+
+    def _apply_flowpilot_recovery(
+        self,
+        events: list[Event],
+        provider_messages: tuple[dict[str, Any], ...],
+    ) -> tuple[str, str]:
+        """Re-apply only the missing suffix from a persisted DCS batch."""
+        active_ids = [event.id for event in self._state.active_branch()]
+        expected_ids = [event.id for event in events]
+        prefix = 0
+        if expected_ids:
+            try:
+                start = active_ids.index(expected_ids[0])
+            except ValueError:
+                start = -1
+            if start >= 0:
+                while (
+                    prefix < len(expected_ids)
+                    and start + prefix < len(active_ids)
+                    and active_ids[start + prefix] == expected_ids[prefix]
+                ):
+                    prefix += 1
+                if prefix and start + prefix < len(active_ids):
+                    raise RuntimeError(
+                        "FlowPilot recovery event is on a divergent branch"
+                    )
+        missing = events[prefix:]
+        if missing:
+            cursor, digest = self._apply_flowpilot_events_atomically(
+                missing, provider_messages, persist_recovery=False
+            )
+            return cursor, digest
+        active = self._state.active_branch()
+        return active[-1].id, context_digest(active)
 
     def _recover_persisted_client_tools(
         self,
@@ -1300,10 +1428,61 @@ class LocalConversation(BaseConversation):
         own ID.  ``session_id`` is always the conversation's ID.
         """
         conv_id = str(self._state.id)
+        headers = None
+        if self._flowpilot_runtime is not None:
+            events = list(self._state.active_branch())
+            cursor = events[-1].id if events else "root"
+            identity = self._flowpilot_runtime.begin_request(
+                context_sequence=len(events),
+                base_context_cursor=cursor,
+                context_digest=context_digest(events),
+            )
+            headers = identity.headers(self._flowpilot.api_key)
         return LLMCallContext(
             prompt_cache_key=self._prompt_cache_key or conv_id,
             session_id=conv_id,
+            flowpilot_headers=headers,
+            flowpilot_prepare_attempt=(
+                self._flowpilot_runtime.prepare_attempt
+                if self._flowpilot_runtime is not None
+                else None
+            ),
+            flowpilot_gateway_url=(
+                self._flowpilot.llm_base_url if self._flowpilot.enabled else None
+            ),
         )
+
+    def get_delegated_llm_call_context(self) -> LLMCallContext:
+        """Build correlation for a DCS continuation with no Agent history fork."""
+        if self._flowpilot_runtime is None:
+            raise RuntimeError("FlowPilot runtime is not enabled")
+        identity = self._flowpilot_runtime.begin_delegated_request()
+        conv_id = str(self._state.id)
+        return LLMCallContext(
+            prompt_cache_key=self._prompt_cache_key or conv_id,
+            session_id=conv_id,
+            flowpilot_headers=identity.headers(self._flowpilot.api_key),
+            flowpilot_prepare_attempt=self._flowpilot_runtime.prepare_attempt,
+            flowpilot_gateway_url=self._flowpilot.llm_base_url,
+        )
+
+    def commit_flowpilot_llm_call(self, call_context: LLMCallContext) -> None:
+        if self._flowpilot_runtime is None or not call_context.flowpilot_headers:
+            return
+        identity = self._flowpilot_runtime.active_identity
+        if identity is not None:
+            self._flowpilot_runtime.commit_request(identity)
+
+    def accept_flowpilot_gateway_response(self, llm_response: Any) -> None:
+        if self._flowpilot_runtime is not None:
+            self._flowpilot_runtime.accept_gateway_response(llm_response)
+
+    def abort_flowpilot_llm_call(self, call_context: LLMCallContext) -> None:
+        if self._flowpilot_runtime is None or not call_context.flowpilot_headers:
+            return
+        identity = self._flowpilot_runtime.active_identity
+        if identity is not None:
+            self._flowpilot_runtime.abort_request(identity)
 
     def _bind_conversation_context(self, llm: LLM) -> None:
         """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
@@ -1317,7 +1496,11 @@ class LocalConversation(BaseConversation):
 
         See #3443 for background.
         """
-        llm._call_context = self.get_llm_call_context()
+        conv_id = str(self._state.id)
+        llm._call_context = LLMCallContext(
+            prompt_cache_key=self._prompt_cache_key or conv_id,
+            session_id=conv_id,
+        )
 
     def _condenser_for_switched_llm(
         self,
@@ -2417,6 +2600,13 @@ class LocalConversation(BaseConversation):
                         logger.warning(
                             f"Error closing executor for tool '{tool.name}': {e}"
                         )
+
+        runtime = getattr(self, "_flowpilot_runtime", None)
+        if runtime is not None:
+            try:
+                runtime._finish_line()
+            except Exception as exc:
+                logger.warning("FlowPilot line finish failed: %s", type(exc).__name__)
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.

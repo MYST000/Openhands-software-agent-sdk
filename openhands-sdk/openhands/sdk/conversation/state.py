@@ -310,6 +310,64 @@ class ConversationState(OpenHandsModel):
                 self.head_is_empty = False
         return event
 
+    def append_event_batch(self, events: list[Event]) -> list[Event]:
+        """Prepare a complete event batch and advance HEAD exactly once.
+
+        Event files may exist after a crash, but they remain unreachable until
+        this method successfully persists the new HEAD in ``base_state.json``.
+        """
+        if not events:
+            return []
+        stamped = self.prepare_event_batch(events)
+        self.commit_event_batch(stamped)
+        return stamped
+
+    def prepare_event_batch(self, events: list[Event]) -> list[Event]:
+        """Write event files without moving the authoritative HEAD."""
+        if not events:
+            return []
+        stamped = self.stamp_event_batch(events)
+        self._events.append_batch(stamped)
+        return stamped
+
+    def stamp_event_batch(self, events: list[Event]) -> list[Event]:
+        """Build a stable parent chain without writing events or HEAD."""
+        if not events:
+            return []
+        stamped: list[Event] = []
+        parent = self._resolve_active_leaf()
+        if parent is None and len(self._events) > 0:
+            parent = ROOT_PARENT_ID if self.head_is_empty else None
+        for event in events:
+            current = (
+                event
+                if event.parent_id is not None
+                else event.model_copy(update={"parent_id": parent})
+            )
+            stamped.append(current)
+            from openhands.sdk.event.conversation_state import (
+                ConversationStateUpdateEvent,
+            )
+
+            if not isinstance(current, ConversationStateUpdateEvent):
+                parent = current.id
+        return stamped
+
+    def commit_event_batch(self, stamped: list[Event]) -> None:
+        """Advance and persist HEAD for a previously prepared batch."""
+        if not stamped:
+            return
+        old_leaf = self.leaf_event_id
+        old_empty = self.head_is_empty
+        object.__setattr__(self, "leaf_event_id", stamped[-1].id)
+        object.__setattr__(self, "head_is_empty", False)
+        try:
+            self._save_base_state(self._fs)
+        except Exception:
+            object.__setattr__(self, "leaf_event_id", old_leaf)
+            object.__setattr__(self, "head_is_empty", old_empty)
+            raise
+
     @property
     def view(self) -> View:
         """Lazily-maintained ``View`` of the active branch (``path_to_root(leaf)``).

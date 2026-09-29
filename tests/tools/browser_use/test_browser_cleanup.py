@@ -126,6 +126,18 @@ class TestBrowserCleanup:
 
         mock_executor._async_executor.close.assert_called_once()
 
+    def test_close_partial_executor_does_not_start_portal(self):
+        """Partial construction cleanup must not require a browser server."""
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+        executor._close_lock = threading.Lock()
+        executor._async_executor = MagicMock()
+        executor._cleanup_initiated = False
+
+        executor.close()
+
+        executor._async_executor.run_async.assert_not_called()
+        executor._async_executor.close.assert_called_once()
+
     def test_close_method_releases_shared_executor(self, mock_executor):
         """Test that closing the shared executor clears the singleton reference."""
         BrowserToolSet._shared_executor = mock_executor

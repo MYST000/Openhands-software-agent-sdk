@@ -22,6 +22,7 @@ from openhands.sdk.conversation import (
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.flowpilot import FlowPilotConfig
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
@@ -144,6 +145,7 @@ __all__ = [
     "MCPToolDefinition",
     "MCPToolObservation",
     "MessageEvent",
+    "FlowPilotConfig",
     "HookExecutionEvent",
     "create_mcp_tools",
     "get_logger",

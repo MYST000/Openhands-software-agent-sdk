@@ -20,6 +20,7 @@ def run_task(
     run_id=None,
     trace_context=None,
     load_monitor=None,
+    flowpilot_config=None,
 ):
     from openhands.sdk import Agent, Conversation
     from pydantic import SecretStr
@@ -60,7 +61,18 @@ def run_task(
     except OSError:
         boot = "unknown-boot"
     identity["clock_domain"] = f"controller-monotonic:{identity['host_id']}:{boot}"
-    recorder = TraceRecorder(attempt_dir, identity, load_monitor=load_monitor)
+    if flowpilot_config is None and os.environ.get("FLOWPILOT_PREDICTOR_GATEWAY"):
+        from .predictor_integration import benchmark_flowpilot_config
+
+        flowpilot_config = benchmark_flowpilot_config(config, identity)
+    recorder_type = TraceRecorder
+    recorder_kwargs = {}
+    if flowpilot_config is not None and flowpilot_config.enabled:
+        from .predictor_integration import PredictorTraceRecorder
+
+        recorder_type = PredictorTraceRecorder
+        recorder_kwargs = {"flowpilot_config": flowpilot_config, "benchmark": config.dataset.kind}
+    recorder = recorder_type(attempt_dir, identity, load_monitor=load_monitor, **recorder_kwargs)
     recorder.tool_execution_profile = {
         "tool_timeout_seconds": config.runtime.tool_timeout,
         "max_output_chars": (
@@ -126,6 +138,7 @@ def run_task(
             top_p=config.llm.top_p,
             seed=config.llm.seed,
             litellm_extra_body=extra_body,
+            max_input_tokens=config.llm.max_input_tokens,
             max_output_tokens=config.llm.max_output_tokens,
             timeout=config.llm.timeout,
             num_retries=config.llm.num_retries,
@@ -168,13 +181,21 @@ def run_task(
         )
         workspace = attempt_dir / "conversation_workspace"
         workspace.mkdir()
-        conv = Conversation(
+        conversation_type = Conversation
+        conversation_kwargs = {}
+        if flowpilot_config is not None and flowpilot_config.enabled:
+            from openhands.sdk import LocalConversation
+
+            conversation_type = LocalConversation
+            conversation_kwargs["flowpilot"] = flowpilot_config
+        conv = conversation_type(
             agent=agent,
             workspace=str(workspace),
             callbacks=[recorder.sdk_event],
             max_iteration_per_run=config.runtime.max_iterations,
             persistence_dir=str(attempt_dir / "sdk_state"),
             visualizer=None,
+            **conversation_kwargs,
         )
         recorder.identity["conversation_id"] = str(conv.state.id)
         result["conversation_id"] = str(conv.state.id)

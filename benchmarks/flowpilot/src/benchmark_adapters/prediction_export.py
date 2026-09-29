@@ -249,6 +249,14 @@ def _action(call, index, indexes, rejected):
         if name in CONTROL_TOOLS
         else "proposed_only"
     )
+    measured = end or error or {}
+    executor_ms = measured.get("executor_duration_ms")
+    round_trip_ms = measured.get("round_trip_ms")
+    overhead_ms = (
+        round_trip_ms - executor_ms
+        if round_trip_ms is not None and executor_ms is not None
+        else None
+    )
     validated = start.get("arguments") if start else None
     effective = start.get("effective_arguments") if start else None
     if effective is None and validated:
@@ -268,16 +276,20 @@ def _action(call, index, indexes, rejected):
         "effective_timeout_s": start.get("effective_timeout_s", (effective or {}).get("timeout"))
         if start
         else None,
-        "executor_duration_ms": end.get("executor_duration_ms") if end else None,
-        "round_trip_ms": (end or error or {}).get("round_trip_ms"),
+        "executor_duration_ms": executor_ms,
+        "round_trip_ms": round_trip_ms,
+        "queue_wait_ms": measured.get("queue_wait_ms"),
+        "non_executor_overhead_ms": overhead_ms,
+        "executor_timing_scope": measured.get("executor_timing_scope"),
         "clock_domain": (outcome or {}).get("clock_domain")
-        or (end or {}).get("executor_clock_domain"),
+        or measured.get("executor_clock_domain"),
         "execution_outcome": {k: outcome.get(k) for k in ("exit_code", "timed_out", "truncated")}
         if outcome
         else None,
-        "normal_completion_right_censored": outcome.get("timed_out") if outcome else None,
-        "observed_executor_wall_time_available": end is not None
-        and end.get("executor_duration_ms") is not None,
+        "normal_completion_right_censored": (
+            outcome.get("timed_out") if outcome else measured.get("timed_out")
+        ),
+        "observed_executor_wall_time_available": executor_ms is not None,
     }
 
 
@@ -386,7 +398,10 @@ def _features(request, previous_events):
                 else "execution_error",
                 "executor_duration_ms": event.get("executor_duration_ms"),
                 "round_trip_ms": event.get("round_trip_ms"),
-                "executor_clock_domain": outcome.get("clock_domain") if outcome else None,
+                "queue_wait_ms": event.get("queue_wait_ms"),
+                "executor_clock_domain": outcome.get("clock_domain")
+                if outcome
+                else event.get("executor_clock_domain"),
                 "round_trip_clock_domain": "controller-process-monotonic",
                 "execution_outcome": {
                     key: outcome.get(key) for key in ("exit_code", "timed_out", "truncated")

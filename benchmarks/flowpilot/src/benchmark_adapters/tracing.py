@@ -68,13 +68,15 @@ class Budget:
 
 
 class TraceRecorder:
-    def __init__(self, directory, identity, load_monitor=None):
+    def __init__(self, directory, identity, load_monitor=None, *, tool_timing_observer=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.blobs = self.directory / "blobs"
         self.blobs.mkdir(exist_ok=True)
         self.identity = identity.copy()
         self.load_monitor = load_monitor
+        self.tool_timing_observer = tool_timing_observer
+        self.tool_timing_observer_errors = 0
         self.tool_execution_profile = {}
         self._file = (self.directory / "events.jsonl").open("a", encoding="utf-8")
         self._lock = threading.RLock()
@@ -101,6 +103,26 @@ class TraceRecorder:
             )
             self._file.write(json.dumps(record, ensure_ascii=False, default=json_value) + "\n")
             self._file.flush()
+        # RTT is already measured at the executor boundary. Notify after writing,
+        # outside the recorder lock; observers must enqueue without waiting for ML.
+        if event in {"tool_end", "tool_error"} and self.tool_timing_observer is not None:
+            timing = {key: record.get(key) for key in (
+                "event", "seq", "monotonic_ns", "request_id", "tool_call_id",
+                "action_event_id", "tool_name", "round_trip_ms", "timed_out",
+            )}
+            outcome = record.get("outcome") or {}
+            timing["timed_out"] = (
+                record.get("timed_out") is True or outcome.get("timed_out") is True
+                or record.get("error_type") == "TimeoutError"
+            )
+            timing["execution_error"] = event == "tool_error" or outcome.get("exit_code", 0) != 0
+            try:
+                self.tool_timing_observer(timing)
+            except Exception:
+                # Prediction telemetry must not turn a completed tool into a failure.
+                with self._lock:
+                    self.tool_timing_observer_errors += 1
+        return record
 
     def blob(self, data):
         encoded = json.dumps(data, ensure_ascii=False, default=json_value).encode()
