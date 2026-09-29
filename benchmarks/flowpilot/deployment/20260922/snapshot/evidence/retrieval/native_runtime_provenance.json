@@ -1,0 +1,51 @@
+{
+  "upstream_repository": "https://github.com/texttron/BrowseComp-Plus",
+  "upstream_commit": "046949032b0328319cc9a02663a759ec601d9402",
+  "source_files": {
+    "searcher/searchers/base.py": "694e00a8909efe56f48896c567a47c8913219adff1ad05d0fb49b41fa683af6c",
+    "searcher/searchers/bm25_searcher.py": "b2bf9174def9d6df582c8e370c1c5e0fad2915fd64242b7afed74e74bcc3322f",
+    "searcher/tools.py": "75faed3bb31046fa45a8924bce229af879d9b5c1a496509aa17ef175103caa35",
+    "searcher/searchers/__init__.py": "0db9bccf24d9853997613a4f5c623db2fb6d45952754fc0706a05b6b4e8b8a1b",
+    "searcher/mcp_server.py": "c6c7082f93c8483d77d07e920827d74c6e29f9099fd65f2cfcdfe63714d78cc3"
+  },
+  "upstream_modifications": [],
+  "launcher_change": "Sparse-only CPU bootstrap; skip execution of BrowseComp searchers/__init__.py dense registry and omit exactly two unused neural imports in an in-memory copy of Pyserini Lucene initializer; official BM25Searcher, BaseSearcher, register_tools, Pyserini _searcher.py and Java bindings otherwise unchanged.",
+  "tokenizer_policy": {
+    "repo": "Qwen/Qwen3-0.6B",
+    "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "cache_ref_main_pinned": true,
+    "offline": true,
+    "model_weights_downloaded": false
+  },
+  "transport": "streamable-http",
+  "host": "127.0.0.1",
+  "port": 8123,
+  "k": 5,
+  "snippet_max_tokens": 512,
+  "get_document": "official full text, unmodified",
+  "environment_scope": "Minimal CPU BM25 dependencies, not a reproduction of the full upstream dense/GPU dependency environment.",
+  "pyserini": {
+    "version": "1.2.0",
+    "sdist_sha256": "bc1768c49ff1df1edebd010a9492988fea2a8400f0812a53d5acc3086e50d05c",
+    "initializer_source_sha256": "5dc76e81823ffb536b1aee356ccc3c6afa47547985844b5c8f9cc10c586397be",
+    "initializer_sparse_sha256": "b42f7c45462f27cdbd81ead8dd475c0beb5f0e79a77331ea0850180033d5642c",
+    "omitted_imports": [
+      "from ._impact_searcher import LuceneImpactSearcher, SlimSearcher",
+      "from ._hnsw_searcher import LuceneHnswDenseSearcher, LuceneFlatDenseSearcher"
+    ],
+    "unchanged_searcher_sha256": "f0f952de2617b626c5a3447771baa83e3344be3394889b086f72a0dbd0c501e0",
+    "site_packages_modified": false
+  },
+  "dependency_compatibility": {
+    "fastmcp": "2.9.2",
+    "mcp": "1.9.4",
+    "pydantic": "2.11.7",
+    "pydantic-settings": "2.10.1",
+    "reason": "FastMCP 2.9.2 Settings failed against automatically resolved pydantic 2.13.5; explicitly fixed compatible versions."
+  },
+  "launcher_sha256": "0152d5f30c8ea33854bb73029b319695defad2ef945ab7fe66416c56585af8d3",
+  "cpu_lock_sha256": "eea44c12257eb70d687cef8d541c4bec25231410b840301cbb9fe6985a556832",
+  "assets_manifest_sha256": "0ef35eb92bec741744862cec1fd56345e76f11ca3140de76e6d6e6a77a3792b7",
+  "smoke_script_sha256": "a61dd7fc86d408b96bf0e2890dfde633ed8cc1e014e0804dd78d941465ef1240",
+  "start_script_sha256": "ca3cac35c4ec06b4bf3f5441bde216ccd412f6092abdb8c71c8fd2b138fcab44"
+}

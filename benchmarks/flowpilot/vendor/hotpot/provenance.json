@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/hotpotqa/hotpot",
+  "commit": "3635853403a8735609ee997664e1528f4480762a",
+  "files": {
+    "hotpot_evaluate_v1.py": "d35fc91a6db21d791dbdda11daf3856e9359f5701d54e3eefba20d88fecc02c0",
+    "LICENSE.txt": "9c264489d021e5905c0544f75e292c63f78dca56acd2aec395dd36dcc41940c7"
+  },
+  "modified": false
+}

@@ -1,0 +1,14 @@
+# Template: supply your versioned task file and normalized fixed-corpus index.
+[dataset]
+kind = "hotpot"
+id = "hotpotqa"
+revision = "replace-with-actual-data-revision"
+split = "dev"
+path = "/root/predictor_exp/data/hotpot_tasks.jsonl"
+setting = "fullwiki-fixed-corpus-v1"
+[retrieval]
+index_path = "/root/predictor_exp/data/hotpot_fixed.sqlite3"
+corpus_revision = "replace-with-actual-corpus-revision"
+top_k = 5
+snippet_chars = 1200
+read_chars = 6000

@@ -1,0 +1,49 @@
+# Pinned data and SDK; edit model endpoint and Docker settings for your server.
+[dataset]
+kind = "swe"
+id = "princeton-nlp/SWE-bench"
+revision = "e48e2bd1e9fecd5bbd641e9414ac59da9f2e69f6"
+split = "dev"
+path = "/root/predictor_exp/data/swe_bench/SWE-bench/data/dev-00000-of-00001.parquet"
+sha256 = "d758d54540aa4140d0274ed0cc93b8288aa6f323c3c603e2557e7666a47fc41b"
+setting = "openhands-code-v1"
+
+[llm]
+model = "openai/qwen3.5-9b"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "LLM_API_KEY"
+temperature = 0.0
+max_output_tokens = 4096
+timeout = 180
+num_retries = 2
+native_tool_calling = true
+
+[runtime]
+sdk_path = "/root/predictor_exp/repos/Openhands-software-agent-sdk"
+sdk_commit = "a6db5dcba26a3acfaeac58c8ba5195433a0e223d"
+runs_dir = "/root/predictor_exp/runs/benchmark_adapters"
+max_iterations = 60
+max_tool_calls = 120
+max_llm_requests = 80
+task_timeout = 3600
+tool_timeout = 120
+max_output_chars = 16000
+
+[docker]
+image_template = "sweb.eval.x86_64.{instance_id}:latest"
+repo_dir = "/testbed"
+conda_env = "testbed"
+network_disabled = true
+memory_limit = "8g"
+nano_cpus = 2000000000
+pids_limit = 512
+pull_missing = false
+keep_container = false
+
+[evaluation]
+python = "/root/predictor_exp/benchmark_adapters/.venv-eval/bin/python"
+harness_path = "/root/predictor_exp/repos/SWE-bench"
+workers = 1
+timeout = 1800
+namespace = "none"
+image_tag = "latest"

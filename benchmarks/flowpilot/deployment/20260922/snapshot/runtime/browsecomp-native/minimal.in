@@ -1,0 +1,11 @@
+fastmcp==2.9.2
+transformers==4.53.3
+pyjnius==1.7.0
+numpy
+pandas
+scipy
+tqdm
+requests
+pyyaml
+pydantic==2.11.7
+pydantic-settings==2.10.1

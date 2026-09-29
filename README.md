@@ -195,3 +195,11 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
   <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
 </picture>
 </div>
+
+## FlowPilot benchmark collection extension
+
+The repository-local [FlowPilot benchmark adapters](benchmarks/flowpilot/README.md) provide
+QuixBugs and pinned LiveCodeBench Python development profiles, explicit task selection,
+OpenHands conversation/tool traces, and independent final evaluation. This optional
+research extension is installed separately; it does not modify the SDK agent loop or
+represent the upstream benchmarks' original single-generation leaderboard protocol.

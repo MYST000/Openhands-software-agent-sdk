@@ -1,0 +1,10 @@
+{
+  "publication_profile": "public-redacted",
+  "internal_host_account_path_scan": "passed",
+  "publish_base": "8e8ed520c8abb09c4c4d3369492d3b02988e2c18",
+  "prior_unpublished_private_commits_in_publish_history": false,
+  "snapshot_manifest": "regenerated after path redaction",
+  "materialize": "fresh and idempotent passed",
+  "adapter_source_logic": "unchanged from tested source",
+  "handoff_document_published": false
+}

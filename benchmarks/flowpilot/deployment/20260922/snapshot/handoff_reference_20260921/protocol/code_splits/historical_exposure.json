@@ -1,0 +1,167 @@
+{
+  "policy": "Conservative: every task in historical frozen selections is development-exposed, whether run or only prepared. Contest siblings and exact duplicate statements will also stay out of unseen holdout.",
+  "tasks": {
+    "quixbugs": {
+      "bitcount": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_collections/adapter_validation_20260916/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_collections/adapter_validation_final_20260916/quixbugs/selection.json"
+      ],
+      "breadth_first_search": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json"
+      ],
+      "bucketsort": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json"
+      ],
+      "depth_first_search": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json"
+      ],
+      "detect_cycle": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json"
+      ],
+      "find_first_in_sorted": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json"
+      ],
+      "find_in_sorted": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json"
+      ],
+      "flatten": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_collections/adapter_validation_20260916/quixbugs/selection.json",
+        "/legacy/predictor_exp/runs/code_collections/adapter_validation_final_20260916/quixbugs/selection.json"
+      ]
+    },
+    "livecodebench": {
+      "1873_A": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "1873_B": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "1873_D": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "1899_A": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc301_a": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_collections/adapter_validation_20260916/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_collections/adapter_validation_final_20260916/livecodebench/selection.json"
+      ],
+      "abc301_b": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc302_a": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc303_a": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc303_b": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc304_a": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc304_b": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc305_a": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "1883_B": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "1883_C": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc301_c": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc301_d": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc302_b": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc302_c": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc302_d": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc303_c": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc303_d": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc304_c": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc304_d": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ],
+      "abc305_c": [
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/livecodebench/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/recovery/lcb_validation/selection.json",
+        "/legacy/predictor_exp/runs/code_benchmarks_20260915/transport_probe_v1/livecodebench/selection.json"
+      ]
+    }
+  }
+}

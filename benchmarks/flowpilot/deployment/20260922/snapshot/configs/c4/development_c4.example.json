@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "run_id": "development_c4_example",
+  "runs_dir": "../../runs/campaigns",
+  "concurrency": 4,
+  "adapter_concurrency": {
+    "livecodebench": 4,
+    "quixbugs": 4,
+    "hotpot": 4,
+    "browsecomp": 4
+  },
+  "seed": 20260921,
+  "queue_policy": "ordered",
+  "partition": "historical_dev",
+  "episode_id": "development-c4",
+  "replica_id": "replica-0",
+  "uid_base": 63200,
+  "entries": [
+    {
+      "config": "livecodebench.toml",
+      "task_ids": [
+        "abc305_a",
+        "abc301_d",
+        "abc302_b",
+        "abc304_b"
+      ],
+      "checker": "../../data/livecodebench/testing_util.reference.py",
+      "python_bin": "../../.venv-task/bin",
+      "research_split": "historical_dev"
+    },
+    {
+      "config": "hotpot.toml",
+      "task_ids": [
+        "5a8b57f25542995d1e6f1371"
+      ],
+      "research_split": "historical_dev"
+    },
+    {
+      "config": "browsecomp.toml",
+      "task_ids": [
+        "769"
+      ],
+      "research_split": "historical_dev"
+    },
+    {
+      "config": "quixbugs.toml",
+      "task_ids": [
+        "bitcount"
+      ],
+      "python_bin": "../../.venv-task/bin",
+      "research_split": "historical_dev"
+    }
+  ]
+}
