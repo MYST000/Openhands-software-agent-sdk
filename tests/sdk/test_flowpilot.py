@@ -732,8 +732,14 @@ def _reuse_credentials() -> dict:
     }
 
 
-def test_exact_hit_returns_validated_observation_with_safe_provenance() -> None:
+@pytest.mark.parametrize("gateway_configured", [False, True])
+def test_exact_hit_returns_validated_observation_with_safe_provenance(
+    gateway_configured: bool,
+) -> None:
     runtime = _reuse_runtime()
+    if gateway_configured:
+        # Streaming provider responses carry no gateway decision metadata.
+        runtime.configure_gateway_reuse(deferred=False, api_kind="chat")
     response = {
         "decision": "sync_with_reused_result",
         "result": {
@@ -766,6 +772,44 @@ def test_exact_hit_returns_validated_observation_with_safe_provenance() -> None:
     assert "must-not-leak" not in text
     assert "similarity_score" not in text
     assert request_json.call_args.args[1]["arguments"] == {"query": "flowpilot"}
+
+
+@pytest.mark.parametrize("api_kind", ["chat", "responses"])
+def test_missing_gateway_decision_resolves_at_tool_boundary(api_kind) -> None:
+    runtime = _reuse_runtime()
+    runtime.configure_gateway_reuse(deferred=False, api_kind=api_kind)
+    with patch.object(
+        FlowPilotRuntime, "_request_json", return_value={"decision": "execute_locally"}
+    ) as request_json:
+        assert runtime.resolve_reuse(_reuse_action(), ReusableSearchObservation) is None
+    request_json.assert_called_once()
+    assert request_json.call_args.args[0] == "/flowpilot/v1/reuse/resolve"
+
+
+def test_explicit_gateway_local_decision_does_not_resolve_twice() -> None:
+    runtime = _reuse_runtime()
+    runtime.configure_gateway_reuse(deferred=False, api_kind="chat")
+    action = _reuse_action()
+    identity = runtime.tool_identity
+    assert identity is not None
+    runtime.accept_gateway_response(
+        {
+            "flowpilot": {
+                "decisions": [
+                    {
+                        "decision": "execute_locally",
+                        "identity": {
+                            **runtime._reuse_identity(identity, action),
+                            "action_id": None,
+                        },
+                    }
+                ]
+            }
+        }
+    )
+    with patch.object(FlowPilotRuntime, "_request_json") as request_json:
+        assert runtime.resolve_reuse(action, ReusableSearchObservation) is None
+    request_json.assert_not_called()
 
 
 def test_semantic_opt_in_uses_phase3_and_progress_is_best_effort() -> None:

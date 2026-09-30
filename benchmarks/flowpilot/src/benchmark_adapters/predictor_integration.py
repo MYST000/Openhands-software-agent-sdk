@@ -4,53 +4,40 @@ No ML dependencies in the SDK process. Reuse uses the SDK's existing protocol;
 actual executor events alone feed the RTT learner.
 """
 
-import hashlib
 import json
 import os
 import queue
 import threading
 import time
 from collections import Counter, OrderedDict, deque
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
+from openhands.sdk.event import ObservationEvent
+from openhands.sdk.llm import TextContent
+
 from .prediction_export import _features
+from .reuse_profile import retrieval_actions, retrieval_scope
 from .tracing import TraceRecorder, write_json
 
 
-def benchmark_flowpilot_config(config, identity):
+def benchmark_flowpilot_config(config, _identity):
     from openhands.sdk.flowpilot import FlowPilotConfig
 
     retrieval = config.dataset.kind in {"hotpot", "browsecomp"}
-    scope = hashlib.sha256(
-        json.dumps(
-            {
-                "benchmark": config.dataset.kind,
-                "retrieval": asdict(config.retrieval),
-                "observation": "RetrievalObservation-v1",
-            },
-            sort_keys=True,
-            default=str,
-        ).encode()
-    ).hexdigest()
-    tools = (
-        ("search", "get_document")
-        if config.dataset.kind == "browsecomp"
-        else ("search", "read_document")
-    )
+    tools = tuple(retrieval_actions(config)) if retrieval else ()
     adapter = FlowPilotConfig(
         enabled=True,
         gateway_url=os.environ["FLOWPILOT_PREDICTOR_GATEWAY"],
         api_key=os.environ["FLOWPILOT_INGRESS_API_KEY"],
-        job_id=identity["run_id"],
-        line_id=identity["attempt_id"] + "-" + identity["task_id"],
+        # LocalConversation derives job/line IDs from its persistent UUID.
+        # The benchmark run/task/attempt identity remains collection metadata.
         deployment_id=os.environ.get("FLOWPILOT_REUSE_DEPLOYMENT_ID", "local"),
         namespace_id=os.environ.get("FLOWPILOT_REUSE_DEFAULT_NAMESPACE", "default"),
-        exact_reuse_enabled=retrieval,
-        reusable_web_tools=tools if retrieval else (),
-        data_source_constraints=(f"benchmark:{config.dataset.kind}", f"corpus-config:{scope}")
-        if retrieval
-        else (),
+        exact_reuse_enabled=retrieval
+        and os.environ.get("FLOWPILOT_REUSE_ENABLED", "0").strip().lower()
+        not in {"0", "false", "no", "off"},
+        reusable_web_tools=tools,
         timeout=10,
     )
 
@@ -59,16 +46,25 @@ def benchmark_flowpilot_config(config, identity):
         llm = profile["openhands"]["llm"]
         extra = llm["litellm_extra_body"]
         gateway = "http://{host}:{port}".format(**profile["flowpilot"])
-        expected = {k: llm[k] for k in (
-            "temperature", "top_p", "max_input_tokens", "max_output_tokens", "timeout")}
-        expected.update({k: extra[k] for k in (
-            "top_k", "min_p", "presence_penalty", "repetition_penalty")})
-        expected.update(model="openai/" + profile["vllm"]["args"]["served_model_name"],
+        expected = {
+            k: llm[k]
+            for k in ("temperature", "top_p", "max_input_tokens", "max_output_tokens", "timeout")
+        }
+        expected.update(
+            {k: extra[k] for k in ("top_k", "min_p", "presence_penalty", "repetition_penalty")}
+        )
+        expected.update(
+            model="openai/" + profile["vllm"]["args"]["served_model_name"],
             base_url=gateway + "/v1",
-            enable_thinking=extra["chat_template_kwargs"]["enable_thinking"])
-        mismatches = [name for name, value in expected.items()
-                      if getattr(config.llm, name) != value]
-        if config.runtime.max_iterations != profile["openhands"]["conversation"]["max_iteration_per_run"]:
+            enable_thinking=extra["chat_template_kwargs"]["enable_thinking"],
+        )
+        mismatches = [
+            name for name, value in expected.items() if getattr(config.llm, name) != value
+        ]
+        if (
+            config.runtime.max_iterations
+            != profile["openhands"]["conversation"]["max_iteration_per_run"]
+        ):
             mismatches.append("max_iterations")
         if config.llm.seed not in profile["workload"]["seeds"]:
             mismatches.append("seed")
@@ -78,12 +74,18 @@ def benchmark_flowpilot_config(config, identity):
             raise ValueError("Benchmark differs from experiment profile: " + ", ".join(mismatches))
         options = dict(profile["openhands"]["flowpilot"])
         options["reusable_web_tools"] = tuple(
-            name for name in tools if retrieval and name in options["reusable_web_tools"])
+            name for name in tools if retrieval and name in options["reusable_web_tools"]
+        )
         for flag in ("exact_reuse_enabled", "semantic_reuse_enabled", "deferred_context_enabled"):
             options[flag] = bool(options[flag] and retrieval)
-        adapter = replace(adapter, **options,
+        adapter = replace(
+            adapter,
+            **options,
             deployment_id=profile["flowpilot"]["reuse_deployment_id"],
-            namespace_id=profile["flowpilot"]["reuse_default_namespace"])
+            namespace_id=profile["flowpilot"]["reuse_default_namespace"],
+        )
+    if adapter.exact_reuse_enabled:
+        adapter = replace(adapter, data_source_constraints=retrieval_scope(config))
     return adapter
 
 
@@ -209,7 +211,7 @@ class PredictorTraceRecorder(TraceRecorder):
     def sdk_event(self, event):
         # Reused observations bypass the executor, but still belong to benchmark
         # evidence. Do not manufacture tool_end or RTT for these observations.
-        if type(event).__name__ == "ObservationEvent" and event.tool_name in {
+        if isinstance(event, ObservationEvent) and event.tool_name in {
             "search",
             "get_document",
             "read_document",
@@ -217,17 +219,21 @@ class PredictorTraceRecorder(TraceRecorder):
             observation = event.observation
             if not observation.is_error:
                 for item in observation.content:
-                    text = getattr(item, "text", "")
-                    try:
-                        value, _ = json.JSONDecoder().raw_decode(text.lstrip())
-                    except ValueError:
+                    if not isinstance(item, TextContent):
                         continue
-                    rows = value if isinstance(value, list) else [value]
-                    self.retrieved_docids.update(
-                        str(row["docid"])
-                        for row in rows
-                        if isinstance(row, dict) and "docid" in row
-                    )
+                    text = item.text.lstrip()
+                    while text:
+                        try:
+                            value, end = json.JSONDecoder().raw_decode(text)
+                        except ValueError:
+                            break
+                        rows = value if isinstance(value, list) else [value]
+                        self.retrieved_docids.update(
+                            str(row["docid"])
+                            for row in rows
+                            if isinstance(row, dict) and "docid" in row
+                        )
+                        text = text[end:].lstrip()
         super().sdk_event(event)
 
     def close(self):

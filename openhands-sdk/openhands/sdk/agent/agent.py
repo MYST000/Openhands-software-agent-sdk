@@ -705,9 +705,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ),
                 api_kind=("responses" if self.llm.uses_responses_api() else "chat"),
                 tool_schema_digests={
-                    name: payload_digest(tool.mcp_tool.inputSchema)
+                    name: payload_digest(tool.to_mcp_tool()["inputSchema"])
                     for name, tool in self.tools_map.items()
-                    if isinstance(tool, MCPToolDefinition)
                 },
             )
 
@@ -927,9 +926,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ),
                 api_kind=("responses" if self.llm.uses_responses_api() else "chat"),
                 tool_schema_digests={
-                    name: payload_digest(tool.mcp_tool.inputSchema)
+                    name: payload_digest(tool.to_mcp_tool()["inputSchema"])
                     for name, tool in self.tools_map.items()
-                    if isinstance(tool, MCPToolDefinition)
                 },
             )
 
@@ -2304,11 +2302,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reused = conversation._flowpilot_runtime.resolve_reuse(
                 action_event,
                 tool.observation_type,
-                input_schema_digest=(
-                    payload_digest(tool.mcp_tool.inputSchema)
-                    if isinstance(tool, MCPToolDefinition)
-                    else None
-                ),
+                input_schema_digest=payload_digest(tool.to_mcp_tool()["inputSchema"]),
             )
             if reused is not None:
                 return [

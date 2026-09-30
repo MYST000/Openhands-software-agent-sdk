@@ -12,6 +12,51 @@
 
 上游来源：[QuixBugs](https://github.com/jkoppel/QuixBugs/tree/4257f44b0ff1181dedaedee6a447e133219fcebf)、[LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench/tree/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24)、[固定LCB数据](https://huggingface.co/datasets/livecodebench/code_generation_lite/tree/0fe84c3912ea0c4d4a78037083943e8f0c4dd505)。
 
+## FlowPilot 工具复用
+
+当前复用选择为 `search`、`read_document`、`get_document`，对应 FlowPilot 的
+`RetrievalObservation` adapter；旧 Tavily / 原生 BrowseComp MCP 复用配置不再用于此入口。
+OpenHands 通用工具能力和既有实验快照保留。
+
+| 工具 | 精确匹配 | 语义匹配 |
+| --- | --- | --- |
+| search | query 与 top_k（有该参数的后端默认 5） | 只允许 query；其余约束必须相同 |
+| read_document | doc_id、start_sentence、max_sentences | 禁止 |
+| get_document | docid；SQLite 还包含 offset | 禁止 |
+
+backend、语料版本、snippet_chars/read_chars、schema、部署和 namespace 都参与隔离。
+BrowseComp MCP 的 search/get_document 没有 top_k/offset 参数，使用独立 adapter_id，
+返回服务端原文。不能根据某次调用是否携带 top_k 判断 benchmark。
+
+用**本次运行同一份 TOML**导出网关 registry，支持同时提供多个配置：
+
+```bash
+PYTHONPATH=benchmarks/flowpilot/src .venv/bin/python -m benchmark_adapters.reuse_profile \
+  --config /absolute/path/hotpot.toml \
+  --config /absolute/path/browsecomp.toml \
+  --output /absolute/path/benchmark-registry.json
+```
+
+`retrieval.corpus_revision` 必须固定。远程 `hotpot_rpc/browsecomp_mcp` 还需声明
+`retrieval.server_policy_revision`，标识实际服务端检索器/模型、k、snippet/tokenizer、
+读取范围及返回规则；改变服务配置时必须换版本。该声明不能证明远端资产未被修改。
+导出器不执行工具；SQLite/RPC 原有准备阶段继续负责实际索引校验。
+
+网关加载 registry 后，benchmark 运行端设置 `FLOWPILOT_PREDICTOR_GATEWAY`、
+`FLOWPILOT_INGRESS_API_KEY` 和 `FLOWPILOT_REUSE_ENABLED=1`。
+仅设置预测连接地址不会开启复用。若设置 `FLOWPILOT_EXPERIMENT_PROFILE`，
+工具白名单和 exact/semantic/DCS 开关以实验配置为准。
+benchmark 不显式分配 `job_id` 或 `line_id`，由 `LocalConversation` 根据自身 UUID
+派生 `job-<conversation_id>` 和 `line-<conversation_id>`。同一 campaign 的独立任务
+属于不同 Job；恢复同一 conversation 则保持身份。`run_id/task_id/attempt_id` 仍用于实验记录。
+默认语义模式 shadow 只观察；active 才允许替代，并要求关闭 exact-only 的 DCS 路径。
+直接构造 FlowPilotConfig 时使用 `retrieval_scope(config)` 作为 data_source_constraints。
+
+命中只交付给当前调用的 tool_call_id；真实执行后的 Observation 才能发布。
+缓存命中不制造 tool_end 或 RTT 反馈，预测器的实现仍由外部提供。
+SDK 现在同时发送本地 ToolDefinition 与 MCP 的真实输入 schema 摘要。
+正式采集仍需通过原有 SDK provenance 检查；registry 导出不绕过这一检查。
+
 ## 工具与预测时点
 
 两类均有两个环境工具：`code_terminal`、`code_file_editor`，加SDK内置`think`、`finish`两个控制动作，即当前模型看到4个工具schema。`pytest`、`python`、文件查找等是终端参数中的操作，不单独算工具；最终离线评价也不算actor工具。
@@ -76,7 +121,7 @@ python -m benchmark_adapters.code_collection \
 - 复制并提交本目录即可携带全部适配器源代码、测试、配置模板和LCB锁定元数据；无需复制旧的外部adapter路径。
 - 不把数据集、模型、venv、实验日志或私有机器配置加入Git。
 - 与同门对接的是请求快照/事件ID、工具proposal/execution和耗时接口。调度器/预测器接入位置在`sdk_bridge.py`与`tracing.py`边界，不需要把某一benchmark的评价代码塞入SDK的Agent循环。
-- 本轮只迁入适配器；没有实现FlowPilot、KV或Tool Cache，也没有新增并发调度。工具执行时间与评价时间分开，编辑操作不能简单缓存stdout后跳过真实修改。
+- benchmark 通过 SDK 接入独立 FlowPilot 的 Tool Cache，不在采集器内实现缓存或 KV 调度。工具执行时间与评价时间分开，编辑操作不能缓存 stdout 后跳过真实修改。
 
 ## 验证
 

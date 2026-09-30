@@ -1683,11 +1683,10 @@ class FlowPilotRuntime:
         with self._lock:
             identity = self._tool_identity
             gateway_decision = self._gateway_decisions.pop(action.tool_call_id, None)
-            gateway_reuse_configured = self._gateway_reuse_policy is not None
         if identity is None:
             return None
-        if gateway_reuse_configured and gateway_decision is None:
-            return None
+        # SSE has no gateway decision envelope. Resolve those calls at the
+        # Tool boundary; an explicit gateway decision still avoids a second RPC.
         reuse_identity = self._reuse_identity(identity, action)
         payload: dict[str, Any] = {
             "protocol_version": self.config.reuse_protocol_version,

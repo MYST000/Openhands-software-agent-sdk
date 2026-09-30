@@ -115,6 +115,7 @@ include = [
     "scripts"
 ]
 extraPaths = [
+    "benchmarks/flowpilot/src",
     "openhands-sdk",
     "openhands-tools",
     "openhands-workspace",

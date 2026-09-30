@@ -73,6 +73,7 @@ class RetrievalConfig:
     mcp_url: str = "http://127.0.0.1:8123/mcp"
     index_path: str = ""
     corpus_revision: str = ""
+    server_policy_revision: str = ""
     top_k: int = 5
     snippet_chars: int = 1200
     read_chars: int = 6000
