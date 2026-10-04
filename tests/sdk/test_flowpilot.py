@@ -238,6 +238,7 @@ def _dcs_conversation(
     tmp_path: Path,
     *,
     on_execute: Callable[[], None],
+    extra_body: dict | None = None,
 ) -> LocalConversation:
     register_tool(
         _SearchTool.name,
@@ -260,7 +261,9 @@ def _dcs_conversation(
         ),
     )
     agent = Agent(
-        llm=LLM(model="gpt-4o", caching_prompt=False),
+        llm=LLM(
+            model="gpt-4o", caching_prompt=False, litellm_extra_body=extra_body or {}
+        ),
         tools=[Tool(name=_SearchTool.name), Tool(name=_LocalReadTool.name)],
         include_default_tools=[],
         tool_concurrency_limit=1,
@@ -1277,11 +1280,57 @@ def test_phase2_deferred_reuse_never_injects_an_observation() -> None:
     )
 
 
-def test_agent_loop_defers_exact_hit_until_terminal_sync(tmp_path: Path) -> None:
+@pytest.fixture(
+    params=[
+        {},
+        {
+            "chat_template_kwargs": {"enable_thinking": False},
+            "top_k": 20,
+            "min_p": 0,
+            "presence_penalty": 1.5,
+            "repetition_penalty": 1,
+        },
+    ]
+)
+def dcs_extra_body(request) -> dict:
+    return deepcopy(request.param)
+
+
+@pytest.mark.parametrize("responses_api", [False, True])
+def test_dcs_snapshot_preserves_provider_extra_body(
+    tmp_path: Path, dcs_extra_body: dict, responses_api: bool
+) -> None:
+    conversation = _dcs_conversation(
+        tmp_path, on_execute=lambda: None, extra_body=dcs_extra_body
+    )
+    agent = conversation.agent
+    assert isinstance(agent, Agent)
+    messages = [Message(role="user", content=[TextContent(text="query")])]
+    try:
+        assert agent._flowpilot_delegation_is_safe(
+            conversation, conversation.state, messages
+        )
+        with patch.object(LLM, "uses_responses_api", return_value=responses_api):
+            body = agent._flowpilot_request_body(
+                messages, conversation.get_llm_call_context()
+            )
+        assert "extra_body" not in body
+        assert all(body[key] == value for key, value in dcs_extra_body.items())
+        assert ("input" if responses_api else "messages") in body
+        assert not {"api_key", "extra_headers", "api_base"} & body.keys()
+        assert agent.llm.litellm_extra_body == dcs_extra_body
+    finally:
+        conversation.close()
+
+
+def test_agent_loop_defers_exact_hit_until_terminal_sync(
+    tmp_path: Path, dcs_extra_body: dict
+) -> None:
     executions: list[str] = []
     conversation = _dcs_conversation(
         tmp_path,
         on_execute=lambda: executions.append("executed"),
+        extra_body=dcs_extra_body,
     )
     control = _DCSControl(
         conversation,
@@ -1344,6 +1393,11 @@ def test_agent_loop_defers_exact_hit_until_terminal_sync(tmp_path: Path) -> None
         )
 
     assert executions == []
+    assert control.request_snapshot is not None
+    assert "extra_body" not in control.request_snapshot
+    assert all(
+        control.request_snapshot[key] == value for key, value in dcs_extra_body.items()
+    )
     assert reconciled == {"status": "in_sync", "sync_required": False}
     assert control.sync_visible_event_types
     assert "ActionEvent" not in control.sync_visible_event_types[0]
@@ -1424,8 +1478,11 @@ def test_agent_loop_releases_empty_delegation_before_local_fallback(
 @pytest.mark.asyncio
 async def test_async_agent_loop_defers_exact_hit_until_terminal_sync(
     tmp_path: Path,
+    dcs_extra_body: dict,
 ) -> None:
-    conversation = _dcs_conversation(tmp_path, on_execute=lambda: None)
+    conversation = _dcs_conversation(
+        tmp_path, on_execute=lambda: None, extra_body=dcs_extra_body
+    )
     control = _DCSControl(
         conversation,
         [

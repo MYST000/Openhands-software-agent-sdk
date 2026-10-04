@@ -1729,7 +1729,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             and not self.llm.is_subscription
             and not isinstance(self.llm, RouterLLM)
             and not self.llm.is_caching_prompt_active()
-            and not self.llm.litellm_extra_body
             and self.condenser is None
             and self.critic is None
             and state.security_analyzer is None
@@ -1875,6 +1874,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "model": model,
                 "messages": formatted,
             }
+        # OpenAI transports merge extra_body into the JSON payload before sending.
+        body.update(body.pop("extra_body", {}))
         return json.loads(json.dumps(body, sort_keys=True, separators=(",", ":")))
 
     def _flowpilot_sync_batches(
