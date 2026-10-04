@@ -14,7 +14,6 @@ from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
 
 
@@ -332,8 +331,6 @@ class Message(BaseModel):
         content = "\n".join(
             item.text for item in self.content if isinstance(item, TextContent)
         )
-        if self.role == "tool":
-            content = self._maybe_truncate_tool_text(content)
         message_dict: dict[str, Any] = {"content": content, "role": self.role}
 
         # tool call keys are added in to_chat_dict to centralize behavior
@@ -357,12 +354,6 @@ class Message(BaseModel):
         for item in self.content:
             # All content types now return list[dict[str, Any]]
             item_dicts = item.to_llm_dict()
-
-            if self.role == "tool" and item_dicts:
-                for d in item_dicts:
-                    text_val = d.get("text")
-                    if d.get("type") == "text" and isinstance(text_val, str):
-                        d["text"] = self._maybe_truncate_tool_text(text_val)
 
             # We have to remove cache_prompt for tool content and move it up to the
             # message level
@@ -467,16 +458,6 @@ class Message(BaseModel):
         )
 
         return message_to_responses_dict(self, vision_enabled=vision_enabled)
-
-    def _maybe_truncate_tool_text(self, text: str) -> str:
-        if not text or len(text) <= DEFAULT_TEXT_CONTENT_LIMIT:
-            return text
-        logger.warning(
-            "Tool TextContent text length (%s) exceeds limit (%s), truncating",
-            len(text),
-            DEFAULT_TEXT_CONTENT_LIMIT,
-        )
-        return maybe_truncate(text, DEFAULT_TEXT_CONTENT_LIMIT)
 
     @classmethod
     def from_llm_chat_message(cls, message: LiteLLMMessage) -> "Message":

@@ -156,7 +156,7 @@ def test_tool_to_responses_emits_function_call_output_with_verbatim_call_id():
     assert all(item["call_id"] == "call_xyz789" for item in out)
 
 
-def test_tool_to_responses_truncates_output_over_limit():
+def test_tool_to_responses_preserves_output_over_former_limit():
     from unittest.mock import patch
 
     from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
@@ -172,10 +172,9 @@ def test_tool_to_responses_truncates_output_over_limit():
     with patch("openhands.sdk.llm.message.logger") as mock_logger:
         out = m.to_responses_dict(vision_enabled=False)
 
-        mock_logger.warning.assert_called_once()
+        mock_logger.warning.assert_not_called()
         assert out[0]["type"] == "function_call_output"
-        assert len(out[0]["output"]) == DEFAULT_TEXT_CONTENT_LIMIT
-        assert "<response clipped>" in out[0]["output"]
+        assert out[0]["output"] == long_text
 
 
 def test_tool_to_responses_includes_images_in_function_call_output_when_vision_enabled():  # noqa: E501

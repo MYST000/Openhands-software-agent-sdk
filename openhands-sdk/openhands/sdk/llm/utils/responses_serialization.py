@@ -142,7 +142,7 @@ def _tool_to_responses_items(
                 {
                     "type": "function_call_output",
                     "call_id": message.tool_call_id,
-                    "output": message._maybe_truncate_tool_text(c.text),
+                    "output": c.text,
                 }
             )
         elif isinstance(c, ImageContent) and vision_enabled:
