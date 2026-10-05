@@ -121,6 +121,7 @@ class PredictorTraceRecorder(TraceRecorder):
         required = (
             "job_id",
             "line_id",
+            "conversation_id",
             "request_id",
             "tail_request_id",
             "llm_call_id",
@@ -133,6 +134,7 @@ class PredictorTraceRecorder(TraceRecorder):
         self._identities[request_id] = identity
         while len(self._identities) > 4096:
             self._identities.popitem(last=False)
+        self.emit("flowpilot_request_identity", request_id=request_id, flowpilot_identity=identity)
         history = sorted(
             [r for records in self._history.values() for r in records], key=lambda r: r["seq"]
         )
@@ -164,6 +166,23 @@ class PredictorTraceRecorder(TraceRecorder):
             context, ensure_ascii=True, separators=(",", ":")
         )
         self.predictor_metrics["request_contexts"] += 1
+
+    def response_decision(self, request_id, response):
+        super().response_decision(request_id, response)
+        final = (response.get("flowpilot") or {}).get("final_identity")
+        if final is not None:
+            # The SDK validates and adopts this continuation before emitting
+            # Actions. Keep its registered job/line/conversation/epoch; bind RTT
+            # to the final invocation that actually produced the local Tool Call.
+            identity = dict(self._identities[request_id])
+            for key in ("request_id", "tail_request_id", "llm_call_id", "attempt"):
+                identity[key] = final[key]
+            self._identities[request_id] = identity
+            self.emit(
+                "flowpilot_response_identity",
+                request_id=request_id,
+                flowpilot_identity=identity,
+            )
 
     def _timing(self, timing):
         identity = self._identities.get(timing["request_id"])

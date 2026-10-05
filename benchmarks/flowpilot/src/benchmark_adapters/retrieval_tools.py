@@ -1,8 +1,11 @@
 import json
 import time
+from typing import Any
 
 from openhands.sdk import Action, Observation, ToolDefinition
-from openhands.sdk.tool import Tool, ToolExecutor, register_tool
+from openhands.sdk.tool import Tool, ToolAnnotations, ToolExecutor, register_tool
+from openhands.sdk.tool.schema import Schema
+from openhands.sdk.tool.tool import create_action_type_with_risk
 from pydantic import Field
 
 from .sdk_bridge import get_binding
@@ -148,7 +151,22 @@ class RetrievalExecutor(ToolExecutor):
             return observation
 
 
-class SearchTool(ToolDefinition):
+class RetrievalToolDefinition(ToolDefinition):
+    """Keep the frozen benchmark wire schema while declaring read-only execution."""
+
+    def _get_tool_schema(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,
+    ) -> dict[str, Any]:
+        # The historical actor requested this SDK metadata field. Preserve it
+        # independently of readOnlyHint so trained schema identities stay valid.
+        if add_security_risk_prediction:
+            action_type = create_action_type_with_risk(action_type or self.action_type)
+        return super()._get_tool_schema(False, action_type)
+
+
+class SearchTool(RetrievalToolDefinition):
     @classmethod
     def create(cls, conv_state=None, **params):
         b = get_binding(params["binding_key"])
@@ -164,11 +182,12 @@ class SearchTool(ToolDefinition):
                     else f"Search the fixed corpus. Return docid, title, URL and snippet. top_k must be <= {b.environment.config.retrieval.top_k}."
                 ),
                 executor=RetrievalExecutor(b, cls.name),
+                annotations=ToolAnnotations(readOnlyHint=True),
             )
         ]
 
 
-class ReadDocumentTool(ToolDefinition):
+class ReadDocumentTool(RetrievalToolDefinition):
     @classmethod
     def create(cls, conv_state=None, **params):
         b = get_binding(params["binding_key"])
@@ -178,11 +197,12 @@ class ReadDocumentTool(ToolDefinition):
                 observation_type=RetrievalObservation,
                 description="Read original Wikipedia sentences by doc_id. Returns official title and original zero-based sentence IDs. Use these IDs in supporting_facts.",
                 executor=RetrievalExecutor(b, cls.name),
+                annotations=ToolAnnotations(readOnlyHint=True),
             )
         ]
 
 
-class GetDocumentTool(ToolDefinition):
+class GetDocumentTool(RetrievalToolDefinition):
     @classmethod
     def create(cls, conv_state=None, **params):
         b = get_binding(params["binding_key"])
@@ -198,6 +218,7 @@ class GetDocumentTool(ToolDefinition):
                     else "Read a fixed-corpus document page by docid. offset is a character offset. Follow next_offset when truncated is true."
                 ),
                 executor=RetrievalExecutor(b, cls.name),
+                annotations=ToolAnnotations(readOnlyHint=True),
             )
         ]
 

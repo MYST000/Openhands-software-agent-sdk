@@ -49,7 +49,10 @@ PYTHONPATH=benchmarks/flowpilot/src .venv/bin/python -m benchmark_adapters.reuse
 benchmark 不显式分配 `job_id` 或 `line_id`，由 `LocalConversation` 根据自身 UUID
 派生 `job-<conversation_id>` 和 `line-<conversation_id>`。同一 campaign 的独立任务
 属于不同 Job；恢复同一 conversation 则保持身份。`run_id/task_id/attempt_id` 仍用于实验记录。
-默认语义模式 shadow 只观察；active 才允许替代，并要求关闭 exact-only 的 DCS 路径。
+默认语义模式 shadow 只观察；active 才允许替代。active 可与 DCS 同时开启：语义命中立即交付，DCS 隐藏续跑仍只接收 exact 命中。
+
+本机全流程实验要求保留工具全文：SDK 的 Chat（list/string）与 Responses 序列化均不按字符数截断，DCS 和缓存同样保留全文。原生 BrowseComp MCP 适配器直接转交完整工具返回文本。模型上下文窗口及 DCS 字节容量仍按配置生效；超限不得靠裁剪结果继续。此规则与早期 50,000 字符截断实验不同，耗时不可作为受控性能对比。
+检索工具显式声明 `readOnlyHint=True`，供 SDK 核验委托资格。适配器保留历史 actor 请求的 `summary/security_risk` LLM schema；只读声明不改变实际 MCP 参数或预测器的训练 schema 身份。
 直接构造 FlowPilotConfig 时使用 `retrieval_scope(config)` 作为 data_source_constraints。
 
 命中只交付给当前调用的 tool_call_id；真实执行后的 Observation 才能发布。
@@ -72,7 +75,7 @@ python -m pip install -e ./openhands-sdk
 python -m pip install -e ./benchmarks/flowpilot
 ```
 
-本扩展不加入SDK发布包和根uv workspace，也不修改根锁文件；它依赖SDK公共接口，控制器应先安装本地SDK。保留单独安装边界可避免把benchmark的依赖/评价器带入同门的模型服务环境。当前基线为`a6db5dcba26a3acfaeac58c8ba5195433a0e223d`；适配器/文档单独提交后仍可运行，修改SDK核心或根依赖锁则需要明确更新并重新验证基线。
+本扩展不加入SDK发布包和根uv workspace，也不修改根锁文件；控制器应先安装本地SDK。保留单独安装边界可避免把benchmark的依赖/评价器带入同门的模型服务环境。当前基线为保留工具全文及采样参数的 DCS 修复版 `c4f3ea625f8fbe72f2af12e879651dcff4ba4ef9`；工具 schema 兼容层依赖该版本的 SDK schema 构造器。适配器/文档单独提交后仍可运行，修改SDK核心或根依赖锁则需要明确更新并重新验证基线。
 
 任务执行环境与控制器分开：Python3.10.12及固定依赖见[task-requirements.txt](task-requirements.txt)。当前共享环境也支持历史ClassEval评价，故包含scipy/func-timeout。重建时用同版本Python创建root所有的venv并安装此文件，不允许任务UID写共享环境。
 
@@ -133,3 +136,7 @@ python -m ruff format --check src tests
 ```
 
 实际文件变化与原因见[CHANGES.md](CHANGES.md)；本服务器路径、测量结论及验证记录见[服务器说明](/root/flowpilot/OpenHands代码适配器整合说明_2026-09-16.md)。服务器说明是本地资产，不是另一台服务器的必需依赖。
+
+### 实验 SLO 入口
+
+设置 `FLOWPILOT_EXPERIMENT_PROFILE` 后，runner 读取 `workload.baseline_latency_path`、`baseline_latency_sha256` 与 `slo_multiplier`。基线按 dataset ID、revision、task ID 和题目文本哈希匹配；deadline 等于本次任务开始时间加历史 `duration_s` 乘倍率。在 SDK 会话注册前登记同一 `job-<conversation UUID>`，两次运行使用独立 UUID。SLO 记录写入 `slo.json`，结果包含 `slo_met`、`slo_lateness_s`；SLO 是端到端完成目标，不替代 task_timeout。

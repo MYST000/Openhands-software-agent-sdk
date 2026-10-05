@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .contracts import ConfigurationError
 
-SDK_COMMIT = "a6db5dcba26a3acfaeac58c8ba5195433a0e223d"
+SDK_COMMIT = "c4f3ea625f8fbe72f2af12e879651dcff4ba4ef9"
 SDK_PATH = str(Path(__file__).resolve().parents[4])
 
 

@@ -2,6 +2,7 @@ import os
 import socket
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from .code_tasks import CODE_KINDS, export_code
 from .environment import DockerEnvironment
 from .swe import SWEAdapter
 from .tracing import Budget, BudgetExceeded, TraceRecorder, write_json
+from .workflow_slo import register_workflow_slo
 
 
 def run_task(
@@ -104,6 +106,7 @@ def run_task(
     binding_key = None
     prepared = False
     start = time.monotonic()
+    workflow_started_at = datetime.now(UTC)
     recorder.emit("task_start")
     try:
         if config.dataset.kind == "swe" or is_code:
@@ -188,6 +191,19 @@ def run_task(
 
             conversation_type = LocalConversation
             conversation_kwargs["flowpilot"] = flowpilot_config
+            conversation_id = uuid.uuid4()
+            conversation_kwargs["conversation_id"] = conversation_id
+            slo = register_workflow_slo(
+                config,
+                task,
+                flowpilot_config,
+                conversation_id=conversation_id,
+                started_at=workflow_started_at,
+            )
+            if slo is not None:
+                result["slo"] = slo
+                write_json(attempt_dir / "slo.json", slo)
+                recorder.emit("workflow_slo_registered", **slo)
         conv = conversation_type(
             agent=agent,
             workspace=str(workspace),
@@ -303,6 +319,14 @@ def run_task(
             tool_call_counts=dict(recorder.executed_counts),
             errors=recorder.error_codes,
         )
+        if "slo" in result:
+            result["slo_met"] = (
+                result["execution_status"] == "completed"
+                and result["duration_s"] <= result["slo"]["budget_seconds"]
+            )
+            result["slo_lateness_s"] = max(
+                0.0, result["duration_s"] - result["slo"]["budget_seconds"]
+            )
         write_json(attempt_dir / "result.json", result)
         recorder.emit("task_end", result=result)
         recorder.close()
