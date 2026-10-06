@@ -1103,6 +1103,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         runtime = conversation._flowpilot_runtime
         gateway_batches = runtime.gateway_batches if runtime is not None else []
         if gateway_batches:
+            assert runtime is not None
+            response_deferred = runtime.gateway_response_deferred
             batches = self._flowpilot_reconstruct_gateway_batches(
                 gateway_batches, conversation=conversation, state=state
             )
@@ -1111,10 +1113,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 batches,
                 conversation=conversation,
                 on_event=on_event,
-                barrier_reason="terminal_response",
+                barrier_reason=runtime.deferred_sync_reason or "terminal_response",
                 parent_llm_call_id=str(gateway_batches[-1]["parent_llm_call_id"]),
             )
-            return False, llm_response
+            return response_deferred, llm_response
         if runtime is not None and runtime.gateway_reuse_configured:
             return False, llm_response
         if not self._flowpilot_delegation_is_safe(conversation, state, messages):
@@ -1391,6 +1393,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         runtime = conversation._flowpilot_runtime
         gateway_batches = runtime.gateway_batches if runtime is not None else []
         if gateway_batches:
+            assert runtime is not None
+            response_deferred = runtime.gateway_response_deferred
             batches = self._flowpilot_reconstruct_gateway_batches(
                 gateway_batches, conversation=conversation, state=state
             )
@@ -1399,10 +1403,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 batches,
                 conversation=conversation,
                 on_event=on_event,
-                barrier_reason="terminal_response",
+                barrier_reason=runtime.deferred_sync_reason or "terminal_response",
                 parent_llm_call_id=str(gateway_batches[-1]["parent_llm_call_id"]),
             )
-            return False, llm_response
+            return response_deferred, llm_response
         if runtime is not None and runtime.gateway_reuse_configured:
             return False, llm_response
         if not self._flowpilot_delegation_is_safe(conversation, state, messages):

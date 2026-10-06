@@ -815,6 +815,26 @@ def test_explicit_gateway_local_decision_does_not_resolve_twice() -> None:
     request_json.assert_not_called()
 
 
+@pytest.mark.parametrize("response_deferred", [False, True])
+def test_gateway_expiry_metadata_is_cleared_after_sync(response_deferred: bool) -> None:
+    runtime = _reuse_runtime()
+    runtime.accept_gateway_response(
+        {
+            "flowpilot": {
+                "batches": [{"response": {}, "decisions": []}],
+                "barrier_reason": "lease_expired",
+                "response_deferred": response_deferred,
+            }
+        }
+    )
+    assert runtime.deferred_sync_reason == "lease_expired"
+    assert runtime.gateway_response_deferred is response_deferred
+    runtime._clear_delegation()
+    assert runtime.deferred_sync_reason is None
+    assert not runtime.gateway_response_deferred
+    assert runtime.gateway_batches == []
+
+
 def test_semantic_opt_in_uses_phase3_and_progress_is_best_effort() -> None:
     runtime = FlowPilotRuntime(
         _config(
