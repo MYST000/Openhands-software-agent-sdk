@@ -8,6 +8,7 @@ from typing import Any
 
 from .code_tasks import CODE_KINDS, export_code
 from .environment import DockerEnvironment
+from .jitserve import JITServeContext
 from .swe import SWEAdapter
 from .tracing import Budget, BudgetExceeded, TraceRecorder, write_json
 from .workflow_slo import register_workflow_slo
@@ -29,6 +30,11 @@ def run_task(
 
     from .sdk_bridge import Binding, RecordedLLM, bind, swe_tools, unbind
 
+    if config.jitserve.enabled and (
+        os.environ.get("FLOWPILOT_PREDICTOR_GATEWAY")
+        or (flowpilot_config is not None and flowpilot_config.enabled)
+    ):
+        raise ValueError("The JITServe comparison profile uses direct inference; disable FlowPilot")
     is_code = config.dataset.kind in CODE_KINDS
     if is_code and environment is None:
         raise ValueError("Code benchmarks require an explicitly prepared local environment")
@@ -107,6 +113,16 @@ def run_task(
     prepared = False
     start = time.monotonic()
     workflow_started_at = datetime.now(UTC)
+    conversation_id = uuid.uuid4() if config.jitserve.enabled else None
+    jitserve = (
+        JITServeContext(config.jitserve, str(conversation_id), workflow_started_at.timestamp())
+        if config.jitserve.enabled
+        else None
+    )
+    if jitserve is not None:
+        result["slo"] = jitserve.slo
+        write_json(attempt_dir / "slo.json", jitserve.slo)
+        recorder.emit("jitserve_workflow_started", **jitserve.slo)
     recorder.emit("task_start")
     try:
         if config.dataset.kind == "swe" or is_code:
@@ -150,7 +166,7 @@ def run_task(
             caching_prompt=False,
             log_completions=False,
         )
-        llm.attach(recorder, budget)
+        llm.attach(recorder, budget, jitserve=jitserve)
         binding_key = bind(
             Binding(
                 env, recorder, budget, config.runtime.tool_timeout, config.runtime.max_output_chars
@@ -185,7 +201,9 @@ def run_task(
         workspace = attempt_dir / "conversation_workspace"
         workspace.mkdir()
         conversation_type = Conversation
-        conversation_kwargs = {}
+        conversation_kwargs: dict[str, Any] = (
+            {"conversation_id": conversation_id} if conversation_id is not None else {}
+        )
         if flowpilot_config is not None and flowpilot_config.enabled:
             from openhands.sdk import LocalConversation
 

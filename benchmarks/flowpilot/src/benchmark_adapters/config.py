@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import tomllib
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from .contracts import ConfigurationError
 
 SDK_COMMIT = "c4f3ea625f8fbe72f2af12e879651dcff4ba4ef9"
+JITSERVE_SDK_COMMIT = "6152623b7b171eb0fe2917d9989425c54c27d789"
 SDK_PATH = str(Path(__file__).resolve().parents[4])
 
 
@@ -93,6 +95,29 @@ class EvaluationConfig:
 
 
 @dataclass(frozen=True)
+class JITServeConfig:
+    enabled: bool = False
+    backend: str = "jitserve-v1-port"
+    request_type: int = 1
+    output_len: int = 512
+    workflow_budget_seconds: float = 120.0
+    ttft: float = 10.0
+    tbt: float = 10.0
+
+    def __post_init__(self):
+        if self.backend not in {"stock-v1", "jitserve-v1-port"}:
+            raise ConfigurationError("Unknown jitserve.backend")
+        if type(self.request_type) is not int or self.request_type not in {0, 1, 2}:
+            raise ConfigurationError("jitserve.request_type must be 0, 1 or 2")
+        if type(self.output_len) is not int or self.output_len <= 0:
+            raise ConfigurationError("jitserve.output_len must be a positive integer")
+        for name in ("workflow_budget_seconds", "ttft", "tbt"):
+            value = getattr(self, name)
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                raise ConfigurationError(f"jitserve.{name} must be finite and positive")
+
+
+@dataclass(frozen=True)
 class Config:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -100,6 +125,7 @@ class Config:
     docker: DockerConfig = field(default_factory=DockerConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
+    jitserve: JITServeConfig = field(default_factory=JITServeConfig)
 
     def to_dict(self):
         return asdict(self)
@@ -119,6 +145,7 @@ def load_config(path: str | Path) -> Config:
         docker=DockerConfig,
         retrieval=RetrievalConfig,
         evaluation=EvaluationConfig,
+        jitserve=JITServeConfig,
     )
     if unknown := raw.keys() - classes.keys():
         raise ConfigurationError(f"Unknown config sections: {sorted(unknown)}")
@@ -234,8 +261,10 @@ def load_config(path: str | Path) -> Config:
         raise ConfigurationError("presence_penalty must be in -2..2")
     if not cfg.llm.native_tool_calling:
         raise ConfigurationError("Prediction tracing requires llm.native_tool_calling=true")
-    if cfg.runtime.sdk_commit != SDK_COMMIT:
-        raise ConfigurationError(f"This implementation supports the pinned SDK {SDK_COMMIT}")
+    if cfg.runtime.sdk_commit not in {SDK_COMMIT, JITSERVE_SDK_COMMIT}:
+        raise ConfigurationError(
+            f"Supported pinned SDK baselines: {SDK_COMMIT}, {JITSERVE_SDK_COMMIT}"
+        )
     if not cfg.docker.repo_dir.startswith("/") or cfg.docker.repo_dir == "/":
         raise ConfigurationError("docker.repo_dir must be an absolute task directory")
     return cfg

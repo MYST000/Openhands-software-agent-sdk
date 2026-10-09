@@ -9,6 +9,7 @@ from openhands.sdk.tool import Tool, ToolExecutor, register_tool
 from pydantic import Field, PrivateAttr
 
 from .environment import file_operation_command
+from .jitserve import JITServeContext
 from .tracing import Budget, TraceRecorder
 
 
@@ -17,12 +18,16 @@ class RecordedLLM(LLM):
     _budget: Budget | None = PrivateAttr(default=None)
     _logical_id: str = PrivateAttr(default="")
     _request_id: str = PrivateAttr(default="")
+    _transport_attempt: int = PrivateAttr(default=0)
+    _jitserve: JITServeContext | None = PrivateAttr(default=None)
 
-    def attach(self, recorder, budget):
+    def attach(self, recorder, budget, *, jitserve=None):
         self._recorder, self._budget = recorder, budget
+        self._jitserve = jitserve
 
     def completion(self, *args, **kwargs):
         self._logical_id = uuid.uuid4().hex
+        self._transport_attempt = 0
         return super().completion(*args, **kwargs)
 
     def _prepare_transport_kwargs(self, **kwargs):
@@ -38,6 +43,15 @@ class RecordedLLM(LLM):
         payload["max_retries"] = 0
         payload["num_retries"] = 0
         self._request_id = uuid.uuid4().hex
+        self._transport_attempt += 1
+        if self._jitserve is not None:
+            metadata = self._jitserve.prepare(
+                payload,
+                logical_request_id=self._logical_id,
+                transport_id=self._request_id,
+                attempt=self._transport_attempt,
+            )
+            self._recorder.emit("jitserve_request_identity", jitserve=metadata)
         self._recorder.request(
             self._request_id,
             payload,

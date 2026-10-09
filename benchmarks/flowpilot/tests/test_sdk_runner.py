@@ -13,8 +13,15 @@ os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
 
 @pytest.mark.parametrize("kind", ["swe", "quixbugs"])
 @pytest.mark.parametrize("malformed_first", [False, True])
-def test_real_sdk_model_transport_tools_patch_and_trace(tmp_path, malformed_first, kind):
-    from benchmark_adapters.config import Config, DatasetConfig, LLMConfig, RuntimeConfig
+@pytest.mark.parametrize("backend", [None, "stock-v1", "jitserve-v1-port"])
+def test_real_sdk_model_transport_tools_patch_and_trace(tmp_path, malformed_first, kind, backend):
+    from benchmark_adapters.config import (
+        Config,
+        DatasetConfig,
+        JITServeConfig,
+        LLMConfig,
+        RuntimeConfig,
+    )
     from benchmark_adapters.contracts import CommandResult
     from benchmark_adapters.environment import command_argv
     from benchmark_adapters.runner import run_task
@@ -88,7 +95,7 @@ def test_real_sdk_model_transport_tools_patch_and_trace(tmp_path, malformed_firs
             self.end_headers()
             self.wfile.write(raw)
 
-        def log_message(self, *args):
+        def log_message(self, format, *args):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -136,6 +143,7 @@ def test_real_sdk_model_transport_tools_patch_and_trace(tmp_path, malformed_firs
             num_retries=0,
         ),
         runtime=replace(RuntimeConfig(), max_iterations=4, runs_dir=str(tmp_path / "runs")),
+        jitserve=JITServeConfig(enabled=backend is not None, backend=backend or "stock-v1"),
     )
     task = SWEAdapter.from_record(
         dict(
@@ -186,6 +194,24 @@ def test_real_sdk_model_transport_tools_patch_and_trace(tmp_path, malformed_firs
     assert len(cleanup) == 1
     assert cleanup[0]["container_id"] == "container-fixture"
     requests = [e for e in events if e["event"] == "llm_request_prepared"]
+    identities = [e["jitserve"] for e in events if e["event"] == "jitserve_request_identity"]
+    if backend is None:
+        assert identities == []
+        assert "slo" not in result
+    else:
+        assert len(identities) == len(received)
+        assert {e["job_id"] for e in identities} == {f"job-{result['conversation_id']}"}
+        assert {e["deadline"] for e in identities} == {result["slo"]["deadline"]}
+        assert all(e["transport_attempt"] == 1 for e in identities)
+        assert len({e["logical_request_id"] for e in identities}) == len(received)
+    for actual in received:
+        if backend == "jitserve-v1-port":
+            assert actual["vllm_xargs"]["jitserve_deadline"] == result["slo"]["deadline"]
+            assert actual["vllm_xargs"]["jitserve_output_len"] == 512
+            limit = actual.get("max_tokens", actual.get("max_completion_tokens"))
+            assert limit == config.llm.max_output_tokens != 512
+        else:
+            assert "vllm_xargs" not in actual
     for request, actual in zip(requests, received, strict=True):
         saved = json.loads((tmp_path / "attempt" / request["request"]["path"]).read_text())
         assert saved["messages"] == actual["messages"]
@@ -195,9 +221,12 @@ def test_real_sdk_model_transport_tools_patch_and_trace(tmp_path, malformed_firs
     )
 
 
-def test_recorded_llm_disables_unobserved_http_retries(tmp_path):
+@pytest.mark.parametrize("attempts", [1, 2])
+def test_recorded_llm_disables_unobserved_http_retries(tmp_path, attempts):
     from openhands.sdk import Message, TextContent
 
+    from benchmark_adapters.config import JITServeConfig
+    from benchmark_adapters.jitserve import JITServeContext
     from benchmark_adapters.sdk_bridge import RecordedLLM
     from benchmark_adapters.tracing import Budget, TraceRecorder
 
@@ -216,7 +245,7 @@ def test_recorded_llm_disables_unobserved_http_retries(tmp_path):
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, *args):
+        def log_message(self, format, *args):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -227,10 +256,16 @@ def test_recorded_llm_disables_unobserved_http_retries(tmp_path):
         model="openai/test-model",
         base_url=f"http://127.0.0.1:{server.server_port}/v1",
         api_key="dummy",
-        num_retries=0,
+        num_retries=attempts,
+        retry_min_wait=0,
+        retry_max_wait=0,
         timeout=3,
     )
-    llm.attach(recorder, Budget(5, 5, 20))
+    llm.attach(
+        recorder,
+        Budget(5, 5, 20),
+        jitserve=JITServeContext(JITServeConfig(enabled=True), "retry-conversation", 100.0),
+    )
     try:
         with pytest.raises(Exception):
             llm.completion(messages=[Message(role="user", content=[TextContent(text="hi")])])
@@ -239,7 +274,14 @@ def test_recorded_llm_disables_unobserved_http_retries(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
-    assert len(calls) == 1
+    assert len(calls) == attempts
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    identities = [e["jitserve"] for e in events if e["event"] == "jitserve_request_identity"]
+    assert len({e["logical_request_id"] for e in identities}) == 1
+    assert len({e["request_id"] for e in identities}) == attempts
+    assert [e["transport_attempt"] for e in identities] == list(range(1, attempts + 1))
+    assert {e["deadline"] for e in identities} == {220.0}
+    assert len([e for e in events if e["event"] == "llm_error"]) == attempts
 
 
 def test_real_sdk_timeout_wrapper_is_censored_by_audit(tmp_path):
@@ -264,7 +306,7 @@ def test_real_sdk_timeout_wrapper_is_censored_by_audit(tmp_path):
             self.send_response(500)
             self.end_headers()
 
-        def log_message(self, *args):
+        def log_message(self, format, *args):
             pass
 
     class Env:

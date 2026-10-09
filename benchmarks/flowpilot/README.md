@@ -12,6 +12,56 @@
 
 上游来源：[QuixBugs](https://github.com/jkoppel/QuixBugs/tree/4257f44b0ff1181dedaedee6a447e133219fcebf)、[LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench/tree/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24)、[固定LCB数据](https://huggingface.co/datasets/livecodebench/code_generation_lite/tree/0fe84c3912ea0c4d4a78037083943e8f0c4dd505)。
 
+## JITServe 固定估计对照
+
+`jitserve` 配置默认关闭。显式启用后仍使用现有 Agent、Tools、任务和评测器；
+`RecordedLLM` 只在同步、非流式 Chat Completions 传输边界注入实验参数。
+基础地址使用 `llm.base_url`，本对照要求直连引擎，不同时启用 FlowPilot adapter。
+在现有 benchmark TOML 中添加：
+
+```toml
+[runtime]
+sdk_commit = "6152623b7b171eb0fe2917d9989425c54c27d789"
+
+[jitserve]
+enabled = true
+backend = "jitserve-v1-port" # 原生对照改为 "stock-v1"
+request_type = 1 # 0 latency、1 throughput、2 collective
+output_len = 128 # caller_fixed；与 max_output_tokens 和真实输出长度分开
+workflow_budget_seconds = 120.0
+ttft = 10.0
+tbt = 10.0
+```
+
+SDK 基线显式选择本次验证的提交；原 `c4f3ea6` 基线仍受支持。
+正式入口及验证脚本继续检查核心源码与所选基线一致、SDK 从该 checkout editable 安装，
+不因添加 JITServe 而忽略 provenance 校验。
+
+每个根 Conversation 对应一个 Job/collection，绝对 Unix deadline 从任务启动、
+环境准备之前计算一次，后续 Tool 轮次与 transport retry 不刷新预算。
+两个 backend 均记录相同 SLO 口径；只有 JITServe 发送 `extra_body.vllm_xargs`。
+`jitserve_request_identity` 的 `jitserve` 字段关联 Job、line、conversation、logical request
+和 transport attempt；响应 ID 可通过引擎显式启用的 metadata-only ingress trace
+关联随机化后的实际 EngineCore request ID。未启用时不增加请求字段或身份头。
+
+本入口没有在线 QRF、oracle 长度、graph stage deadline、子 agent/delegation 支持，
+没有修改 OpenHands 核心或启用 FlowPilot admission/reuse/retention/DCS。
+同步非流式 benchmark 路径与服务端 Chat/Responses/SSE 支持范围应分别报告。
+
+`scripts/validate_jitserve.py` 用真实模型、现有 Hotpot 工具和固定官方 scorer 验证多轮与并发。
+其两文档合成语料仅用于接入验收，不属于 HotpotQA 公开成绩。安装本扩展依赖后运行：
+
+```bash
+PYTHONPATH=benchmarks/flowpilot/src .venv/bin/python \
+  benchmarks/flowpilot/scripts/validate_jitserve.py \
+  --backend jitserve-v1-port --output /absolute/new/evidence-dir
+```
+
+配对引擎启动与参数到达检查由独立 vLLM 工作区的
+`examples/others/jitserve/validate_benchmark.py` 执行；固定模型、TP、KV 字节预算、
+worker 容量、采样、任务与到达批次，保留全部请求/Tool 原始 benchmark 轨迹及评分。
+小规模观测只支持本地闭环结论；长期内存稳定性和 SLO 收益需要独立实验。
+
 ## FlowPilot 工具复用
 
 当前复用选择为 `search`、`read_document`、`get_document`，对应 FlowPilot 的

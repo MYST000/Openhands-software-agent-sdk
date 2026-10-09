@@ -127,6 +127,37 @@ def test_config_rejects_unknown_keys_and_verified_train(tmp_path):
         load_config(p)
 
 
+@pytest.mark.parametrize("backend", ["stock-v1", "jitserve-v1-port"])
+def test_jitserve_profile_is_explicit_and_keeps_prediction_separate(tmp_path, backend):
+    from benchmark_adapters.config import JITSERVE_SDK_COMMIT, load_config
+
+    path = tmp_path / "config.toml"
+    base = '[dataset]\npath="tasks.jsonl"\nrevision="fixed"\n'
+    path.write_text(base)
+    assert not load_config(path).jitserve.enabled
+    path.write_text(
+        base + f'[runtime]\nsdk_commit="{JITSERVE_SDK_COMMIT}"\n'
+        f'[jitserve]\nenabled=true\nbackend="{backend}"\n'
+        "request_type=0\noutput_len=128\nworkflow_budget_seconds=60.0\nttft=2.0\ntbt=0.1\n"
+    )
+    config = load_config(path)
+    assert config.jitserve.enabled and config.jitserve.backend == backend
+    assert config.jitserve.output_len == 128 != config.llm.max_output_tokens
+    assert config.to_dict()["jitserve"]["workflow_budget_seconds"] == 60.0
+
+
+@pytest.mark.parametrize(
+    "option", ["output_len=true", "request_type=3", "tbt=0.0", "workflow_budget_seconds=nan"]
+)
+def test_jitserve_profile_rejects_invalid_slo_before_inference(tmp_path, option):
+    from benchmark_adapters.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('[dataset]\npath="tasks.jsonl"\nrevision="fixed"\n[jitserve]\n' + option)
+    with pytest.raises(ValueError, match="jitserve"):
+        load_config(path)
+
+
 @pytest.mark.parametrize(
     "extra,match",
     [('[docker]\nrepo_dir="relative"\n', "absolute"), ("[docker]\nnano_cpus=-1\n", "positive")],
