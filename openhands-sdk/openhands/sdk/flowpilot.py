@@ -261,6 +261,7 @@ class FlowPilotRuntime:
     _gateway_reuse_policy: dict[str, Any] | None = None
     _gateway_decisions: dict[str, dict[str, Any]] = field(default_factory=dict)
     _gateway_batches: list[dict[str, Any]] = field(default_factory=list)
+    _gateway_response_deferred: bool = False
     _leader_credentials: dict[str, dict[str, Any]] = field(default_factory=dict)
     _pending_publications: dict[str, dict[str, Any]] = field(default_factory=dict)
     _file_store: FileStore | None = None
@@ -857,6 +858,7 @@ class FlowPilotRuntime:
             self._gateway_reuse_policy = None
             self._gateway_decisions.clear()
             self._gateway_batches.clear()
+            self._gateway_response_deferred = False
             return identity
 
     def configure_gateway_reuse(
@@ -949,7 +951,15 @@ class FlowPilotRuntime:
             ):
                 raise RuntimeError("FlowPilot gateway DCS batches are malformed")
             with self._lock:
+                deferred = metadata.get("response_deferred", False)
+                if not isinstance(deferred, bool):
+                    raise RuntimeError("FlowPilot deferred response flag is malformed")
+                reason = metadata.get("barrier_reason")
+                if reason is not None and not isinstance(reason, str):
+                    raise RuntimeError("FlowPilot sync reason is malformed")
                 self._gateway_batches = list(batches)
+                self._gateway_response_deferred = deferred
+                self._dcs_required_sync_reason = reason
         policy_version = metadata.get("policy_version")
         if isinstance(policy_version, int):
             with self._lock:
@@ -1551,6 +1561,7 @@ class FlowPilotRuntime:
             self._dcs_last_seq = 0
             self._dcs_required_sync_reason = None
             self._gateway_batches.clear()
+            self._gateway_response_deferred = False
             self._gateway_decisions.clear()
 
     def _require_dcs_reference(self) -> FlowPilotDCSReference:
@@ -1584,6 +1595,11 @@ class FlowPilotRuntime:
     def gateway_batches(self) -> list[dict[str, Any]]:
         with self._lock:
             return list(self._gateway_batches)
+
+    @property
+    def gateway_response_deferred(self) -> bool:
+        with self._lock:
+            return self._gateway_response_deferred
 
     @property
     def gateway_reuse_configured(self) -> bool:
