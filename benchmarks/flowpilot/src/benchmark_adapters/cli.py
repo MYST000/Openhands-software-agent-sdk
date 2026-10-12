@@ -7,6 +7,7 @@ import subprocess
 import sys
 import urllib.request
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +27,15 @@ def adapter_source_digest():
 
 
 def tasks_for(config, ids=None, limit=1):
+    if config.dataset.kind in {"bird", "qasper", "bfcl"}:
+        from .research_tasks import load_tasks as load_research_tasks
+        from .swe import load_records
+
+        key = "id" if config.dataset.kind == "bfcl" else "question_id"
+        selected = ids or [
+            str(row[key]) for row in load_records(config.dataset.path)[: limit or None]
+        ]
+        return load_research_tasks(config, selected)
     from .code_tasks import CODE_KINDS
 
     if config.dataset.kind in CODE_KINDS:
@@ -36,9 +46,14 @@ def tasks_for(config, ids=None, limit=1):
         adapter = SWEAdapter
     else:
         from .retrieval import BrowseCompAdapter, HotpotAdapter
+        from .twowiki import TwoWikiAdapter
 
-        adapter = HotpotAdapter if config.dataset.kind == "hotpot" else BrowseCompAdapter
-    return adapter.load(
+        adapter = {
+            "hotpot": HotpotAdapter,
+            "twowiki": TwoWikiAdapter,
+            "browsecomp": BrowseCompAdapter,
+        }[config.dataset.kind]
+    tasks = adapter.load(
         config.dataset.path,
         dataset_id=config.dataset.id,
         revision=config.dataset.revision,
@@ -46,6 +61,19 @@ def tasks_for(config, ids=None, limit=1):
         ids=ids,
         limit=limit,
     )
+    if config.retrieval.backend == "wikipedia_live":
+        tasks = [
+            replace(
+                task,
+                instruction=task.instruction.replace(
+                    "fixed Wikipedia corpus", "live English Wikipedia"
+                )
+                .replace("official title", "page title")
+                .replace("original sentence numbers", "page-local sentence numbers"),
+            )
+            for task in tasks
+        ]
+    return tasks
 
 
 def task_key(task_id):
@@ -163,8 +191,10 @@ def export_run(run_dir):
                     model_patch="",
                 )
             )
-        elif kind == "hotpot":
-            records.append(dict(task_id=task_id, answer="", sp=[]))
+        elif kind in {"hotpot", "twowiki"}:
+            records.append(dict(task_id=task_id, answer="", sp=[], evidence=[]))
+        elif kind in {"bird", "qasper", "bfcl"}:
+            continue
         else:
             records.append(
                 dict(
@@ -182,15 +212,21 @@ def export_run(run_dir):
         temp = path.with_suffix(".partial")
         temp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
         temp.replace(path)
-    elif kind == "hotpot":
+    elif kind in {"bird", "qasper", "bfcl"}:
+        from .research_tasks import write_predictions
+
+        suffix = "json" if kind == "bird" else "jsonl"
+        path = out / f"predictions.{suffix}"
+        write_predictions(kind, records, path)
+    elif kind in {"hotpot", "twowiki"}:
         path = out / "predictions.json"
-        write_json(
-            path,
-            {
-                "answer": {r["task_id"]: r["answer"] for r in records},
-                "sp": {r["task_id"]: r["sp"] for r in records},
-            },
-        )
+        prediction = {
+            "answer": {r["task_id"]: r["answer"] for r in records},
+            "sp": {r["task_id"]: r["sp"] for r in records},
+        }
+        if kind == "twowiki":
+            prediction["evidence"] = {r["task_id"]: r["evidence"] for r in records}
+        write_json(path, prediction)
     else:
         path = out / "browsecomp"
         path.mkdir(exist_ok=True)
@@ -358,6 +394,26 @@ def main(argv=None):
                     config, args.run_dir, ids, prediction, manifest["run_id"]
                 )
                 status = execute_evaluation(plan) if args.execute else plan
+            elif config.dataset.kind in {"bird", "qasper", "bfcl"}:
+                command = [
+                    config.evaluation.python,
+                    str(Path(config.evaluation.harness_path) / "scripts/score_openhands.py"),
+                    "--benchmark",
+                    config.dataset.kind,
+                    "--predictions",
+                    str(prediction),
+                    "--task-ids",
+                    *ids,
+                    "--split",
+                    config.dataset.split,
+                    "--output",
+                    str(args.run_dir / "evaluation.json"),
+                ]
+                status = {"evaluation_status": "prepared", "command": command}
+                if args.execute:
+                    subprocess.run(command, check=True)
+                    status = json.loads((args.run_dir / "evaluation.json").read_text())
+                    status["evaluation_status"] = "scored"
             else:
                 from .retrieval import evaluate_retrieval
 

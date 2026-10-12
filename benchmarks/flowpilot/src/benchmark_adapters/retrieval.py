@@ -206,7 +206,7 @@ class RetrievalEnvironment:
             != metadata["document_count"]
         ):
             raise ValueError("Index document count mismatch")
-        if self.config.dataset.kind == "hotpot":
+        if self.config.dataset.kind in {"hotpot", "twowiki"}:
             if (
                 metadata.get("missing_sentence_count", 0)
                 or self.connection.execute(
@@ -256,7 +256,7 @@ class RetrievalEnvironment:
         row = self.connection.execute("SELECT * FROM docs WHERE docid=?", (docid,)).fetchone()
         if row is None:
             raise ValueError("Unknown document ID")
-        if self.config.dataset.kind == "hotpot":
+        if self.config.dataset.kind in {"hotpot", "twowiki"}:
             sentences = json.loads(row["sentences"])
             if start_sentence < 0 or not 1 <= max_sentences <= 100:
                 raise ValueError("Invalid sentence range")
@@ -314,6 +314,14 @@ def parse_hotpot_answer(text, environment):
 
 
 def export_answer(kind, task, recorder, result, environment):
+    if kind in {"bird", "qasper", "bfcl"}:
+        from .research_tasks import export_answer as export_research_answer
+
+        return export_research_answer(kind, task, recorder, environment)
+    if kind == "twowiki":
+        from .twowiki import export_answer as export_twowiki_answer
+
+        return export_twowiki_answer(task, recorder.final_text, environment)
     if kind == "hotpot":
         return dict(task_id=task.task_id, **parse_hotpot_answer(recorder.final_text, environment))
     complete = result["execution_status"] == "completed" and bool(recorder.final_text.strip())
@@ -333,12 +341,22 @@ def export_answer(kind, task, recorder, result, environment):
 
 
 def retrieval_tools(binding_key):
+    from .sdk_bridge import get_binding
+
+    if get_binding(binding_key).environment.config.dataset.kind in {"bird", "qasper", "bfcl"}:
+        from .research_tools import make_tools as make_research_tools
+
+        return make_research_tools(binding_key)
     from .retrieval_tools import make_tools
 
     return make_tools(binding_key)
 
 
 def evaluate_retrieval(config, run_dir, ids, prediction, execute):
+    if config.dataset.kind == "twowiki":
+        from .twowiki import evaluate_twowiki
+
+        return evaluate_twowiki(config, run_dir, ids, prediction, execute)
     checked_dataset_digest(config)
     kind = config.dataset.kind
     key = "_id" if kind == "hotpot" else "query_id"

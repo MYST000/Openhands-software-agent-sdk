@@ -1,0 +1,7 @@
+{
+  "url": "https://raw.githubusercontent.com/Alab-NII/2wikimultihop/13800e5be57df1b4040b9b1588c6c811779e69e9/2wikimultihop_evaluate.py",
+  "commit": "13800e5be57df1b4040b9b1588c6c811779e69e9",
+  "sha256": "854b03c487608286d6381379eb32e46d9b845493527d1fe1951d0bf4ec923a40",
+  "metric_scale": "0..100",
+  "version": "original evidence-triples scorer; no answer aliases"
+}

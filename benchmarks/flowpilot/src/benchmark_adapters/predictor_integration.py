@@ -24,7 +24,7 @@ from .tracing import TraceRecorder, write_json
 def benchmark_flowpilot_config(config, _identity):
     from openhands.sdk.flowpilot import FlowPilotConfig
 
-    retrieval = config.dataset.kind in {"hotpot", "browsecomp"}
+    retrieval = config.dataset.kind in {"hotpot", "twowiki", "browsecomp", "bird", "qasper", "bfcl"}
     tools = tuple(retrieval_actions(config)) if retrieval else ()
     adapter = FlowPilotConfig(
         enabled=True,

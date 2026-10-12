@@ -6,7 +6,17 @@ from pathlib import Path
 
 from .contracts import ConfigurationError
 
-SDK_COMMIT = "c4f3ea625f8fbe72f2af12e879651dcff4ba4ef9"
+SDK_COMMIT = "c6d26de70d565bbf0ba977a699292eb279ecc95a"
+SUPPORTED_SDK_COMMITS = (
+    SDK_COMMIT,
+    "7cdf0ed22729ffeffb8718159bd465a77521f6ef",
+    "c4f3ea625f8fbe72f2af12e879651dcff4ba4ef9",
+    "a6db5dcba26a3acfaeac58c8ba5195433a0e223d",
+    "762cf11dcb79989bf99c2bc451567394c0c5c6a7",
+    "7a976b07332aa1b5e42fd4bbddb1762ce0e24a37",
+    "3c7e620883d3246d283d24790cf4532849a60ab6",
+    "c9173c9356298e1309abfda78dc1e0e56d06b97f",
+)
 SDK_PATH = str(Path(__file__).resolve().parents[4])
 
 
@@ -77,6 +87,14 @@ class RetrievalConfig:
     top_k: int = 5
     snippet_chars: int = 1200
     read_chars: int = 6000
+    web_api_key_env: str = "BRAVE_SEARCH_API_KEY"
+    web_country: str = "US"
+    web_search_lang: str = "en"
+    web_max_response_bytes: int = 2000000
+    web_proxy: str = ""
+    web_search_backend: str = "wikipedia"
+    asset_manifest: str = ""
+    qasper_context_mode: str = "retrieval"
 
 
 @dataclass(frozen=True)
@@ -88,6 +106,7 @@ class EvaluationConfig:
     namespace: str = "swebench"
     image_tag: str = "latest"
     hotpot_script: str = ""
+    twowiki_script: str = ""
     browsecomp_repo: str = "/root/predictor_exp/repos/BrowseComp-Plus"
     judge_model: str = "Qwen/Qwen3-32B"
 
@@ -150,8 +169,14 @@ def load_config(path: str | Path) -> Config:
         host_paths = {
             "dataset": {"path"},
             "runtime": {"sdk_path", "runs_dir"},
-            "retrieval": {"index_path"},
-            "evaluation": {"python", "harness_path", "hotpot_script", "browsecomp_repo"},
+            "retrieval": {"index_path", "asset_manifest"},
+            "evaluation": {
+                "python",
+                "harness_path",
+                "hotpot_script",
+                "twowiki_script",
+                "browsecomp_repo",
+            },
         }
         for key in list(values):
             if values[key] and key in host_paths.get(section, set()):
@@ -163,10 +188,14 @@ def load_config(path: str | Path) -> Config:
     if cfg.dataset.kind not in {
         "swe",
         "hotpot",
+        "twowiki",
         "browsecomp",
         "quixbugs",
         "livecodebench",
         "classeval",
+        "bird",
+        "qasper",
+        "bfcl",
     }:
         raise ConfigurationError("Unsupported dataset.kind")
     if cfg.dataset.id.endswith("SWE-bench_Verified") and cfg.dataset.split != "test":
@@ -174,28 +203,61 @@ def load_config(path: str | Path) -> Config:
     supported = {
         "swe": {"princeton-nlp/SWE-bench", "princeton-nlp/SWE-bench_Verified"},
         "hotpot": {"hotpotqa"},
+        "twowiki": {"Alab-NII/2wikimultihop"},
         "browsecomp": {"Tevatron/browsecomp-plus"},
         "quixbugs": {"jkoppel/QuixBugs"},
         "livecodebench": {"livecodebench/code_generation_lite"},
         "classeval": {"FudanSELab/ClassEval"},
+        "bird": {"bird-bench/mini-dev"},
+        "qasper": {"allenai/qasper"},
+        "bfcl": {"gorilla/BFCL-v4-web-search"},
     }
     if cfg.dataset.id not in supported[cfg.dataset.kind]:
         raise ConfigurationError("Unsupported dataset identity for selected adapter")
     settings = {
         "swe": "openhands-code-v1",
         "hotpot": "fullwiki-fixed-corpus-v1",
+        "twowiki": "fullwiki-fixed-corpus-v1",
         "browsecomp": "openhands-search-read-v1",
         "quixbugs": "openhands-python-code-v1",
         "livecodebench": "openhands-python-code-v1",
         "classeval": "openhands-python-code-v1",
+        "bird": "openhands-sqlite-v1",
+        "qasper": "openhands-paper-short-text-v1",
+        "bfcl": "openhands-web-search-v1",
     }
+    if cfg.dataset.kind in {"bird", "qasper", "bfcl"}:
+        expected_backend = "research_web" if cfg.dataset.kind == "bfcl" else "sqlite"
+        allowed_backends = {expected_backend}
+        if cfg.dataset.kind in {"bird", "qasper"}:
+            allowed_backends.add("research_rpc")
+        if cfg.retrieval.backend not in allowed_backends or not cfg.retrieval.asset_manifest:
+            raise ConfigurationError(
+                "Research adapters require the correct backend and asset_manifest"
+            )
+        if cfg.retrieval.web_search_backend not in {"wikipedia", "serpapi"}:
+            raise ConfigurationError("Unknown BFCL search backend")
+    if cfg.dataset.kind == "qasper":
+        if cfg.retrieval.qasper_context_mode not in {"retrieval", "document"}:
+            raise ConfigurationError("Unknown QASPER context mode")
+        if cfg.retrieval.qasper_context_mode == "document":
+            settings["qasper"] = "openhands-paper-document-short-text-v1"
+    if cfg.dataset.kind in {"hotpot", "twowiki"} and cfg.retrieval.backend == "wikipedia_live":
+        settings[cfg.dataset.kind] = "fullwiki-live-wikipedia-v1"
     if cfg.dataset.setting != settings[cfg.dataset.kind]:
         raise ConfigurationError(
             f"Unsupported dataset.setting; expected {settings[cfg.dataset.kind]}"
         )
     if cfg.dataset.split not in {"train", "dev", "test"}:
         raise ConfigurationError("Unknown dataset split")
-    if cfg.retrieval.backend not in {"sqlite", "browsecomp_mcp", "hotpot_rpc"}:
+    if cfg.retrieval.backend not in {
+        "sqlite",
+        "browsecomp_mcp",
+        "hotpot_rpc",
+        "research_web",
+        "research_rpc",
+        "wikipedia_live",
+    }:
         raise ConfigurationError("Unknown retrieval backend")
     if cfg.retrieval.backend == "browsecomp_mcp":
         if cfg.dataset.kind != "browsecomp":
@@ -207,6 +269,12 @@ def load_config(path: str | Path) -> Config:
             raise ConfigurationError("The Hotpot RPC backend only supports Hotpot")
         if not cfg.retrieval.mcp_url.startswith(("http://", "https://")):
             raise ConfigurationError("retrieval.mcp_url must be an HTTP(S) RPC endpoint")
+    if cfg.retrieval.backend == "research_rpc" and not cfg.retrieval.mcp_url.startswith(
+        ("http://", "https://")
+    ):
+        raise ConfigurationError("Research RPC requires an HTTP(S) endpoint")
+    if cfg.retrieval.backend == "wikipedia_live" and cfg.dataset.kind not in {"hotpot", "twowiki"}:
+        raise ConfigurationError("Live Wikipedia backend only supports Hotpot and 2Wiki")
     if cfg.dataset.kind == "browsecomp" and cfg.dataset.split != "test":
         raise ConfigurationError("BrowseComp-Plus question data only has test split")
     if not cfg.dataset.path or not cfg.dataset.revision:
@@ -234,8 +302,10 @@ def load_config(path: str | Path) -> Config:
         raise ConfigurationError("presence_penalty must be in -2..2")
     if not cfg.llm.native_tool_calling:
         raise ConfigurationError("Prediction tracing requires llm.native_tool_calling=true")
-    if cfg.runtime.sdk_commit != SDK_COMMIT:
-        raise ConfigurationError(f"This implementation supports the pinned SDK {SDK_COMMIT}")
+    if cfg.runtime.sdk_commit not in SUPPORTED_SDK_COMMITS:
+        raise ConfigurationError(
+            "This implementation supports pinned SDKs: " + ", ".join(SUPPORTED_SDK_COMMITS)
+        )
     if not cfg.docker.repo_dir.startswith("/") or cfg.docker.repo_dir == "/":
         raise ConfigurationError("docker.repo_dir must be an absolute task directory")
     return cfg

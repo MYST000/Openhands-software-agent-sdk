@@ -21,7 +21,11 @@ from .retrieval_tools import (
 
 def retrieval_actions(config: Config) -> dict[str, type[Action]]:
     kind, backend = config.dataset.kind, config.retrieval.backend
-    if kind == "hotpot" and backend in {"sqlite", "hotpot_rpc"}:
+    if kind in {"bird", "qasper", "bfcl"}:
+        from .research_tools import research_actions
+
+        return research_actions(config)
+    if kind in {"hotpot", "twowiki"} and backend in {"sqlite", "hotpot_rpc", "wikipedia_live"}:
         return {"search": SearchAction, "read_document": HotpotReadAction}
     if kind == "browsecomp" and backend == "sqlite":
         return {"search": SearchAction, "get_document": BrowseReadAction}
@@ -32,13 +36,32 @@ def retrieval_actions(config: Config) -> dict[str, type[Action]]:
 
 def retrieval_scope(config: Config) -> tuple[str, ...]:
     if not config.retrieval.corpus_revision:
-        raise ValueError("Retrieval reuse requires an immutable corpus_revision")
+        raise ValueError(
+            "Retrieval reuse requires corpus_revision (corpus or live-session identity)"
+        )
     if config.retrieval.backend != "sqlite" and not config.retrieval.server_policy_revision:
         raise ValueError("Remote retrieval reuse requires server_policy_revision")
+    retrieval = asdict(config.retrieval)
+    if config.dataset.kind not in {"bird", "qasper", "bfcl"}:
+        for name in (
+            "web_api_key_env",
+            "web_country",
+            "web_search_lang",
+            "web_max_response_bytes",
+            "web_proxy",
+            "web_search_backend",
+            "asset_manifest",
+            "qasper_context_mode",
+        ):
+            retrieval.pop(name)
     profile = {
         "benchmark": config.dataset.kind,
-        "retrieval": asdict(config.retrieval),
-        "observation": "retrieval-observation-v1",
+        "retrieval": retrieval,
+        "observation": (
+            "research-observation-v1"
+            if config.dataset.kind in {"bird", "qasper", "bfcl"}
+            else "retrieval-observation-v1"
+        ),
         "actions": {
             name: action.model_json_schema() for name, action in retrieval_actions(config).items()
         },
@@ -57,10 +80,18 @@ def export_registry(config: Config, *, semantic_mode: str = "shadow") -> list[di
             "tool_name": name,
             "canonical_tool_family": f"{config.dataset.kind}_{name}",
             "tool_version": "1",
-            "adapter_id": f"benchmark_{'native_' if native else ''}{name}_v1",
+            "adapter_id": (
+                f"research_{name}_v1"
+                if config.dataset.kind in {"bird", "qasper", "bfcl"}
+                else f"benchmark_{'native_' if native else ''}{name}_v1"
+            ),
             "adapter_version": "1",
             "input_schema_digest": payload_digest(action.to_mcp_schema()),
-            "result_schema_version": "retrieval-observation-v1",
+            "result_schema_version": (
+                "research-observation-v1"
+                if config.dataset.kind in {"bird", "qasper", "bfcl"}
+                else "retrieval-observation-v1"
+            ),
             "policy_digest": scope[1].split(":", 1)[1],
             "required_data_source_constraints": list(scope),
             "read_only": True,

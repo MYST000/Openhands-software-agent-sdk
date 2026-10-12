@@ -167,7 +167,7 @@ def prepare_campaign(campaign_path):
     if set(caps) != set(ADAPTERS) or any(
         type(v) is not int or not 1 <= v <= 64 for v in caps.values()
     ):
-        raise ValueError("Declare positive concurrency caps for all four adapters")
+        raise ValueError("Declare positive concurrency caps for all registered adapters")
     partition = campaign.get("partition", "historical_dev")
     accepted = {"historical_dev", "fit"} if partition == "fit_plus_aux" else {partition}
     if not accepted <= RESEARCH_SPLITS:
@@ -507,6 +507,13 @@ def evaluate_campaign(root):
                     python_bin=payload["python_bin"],
                     uid=uid,
                 )
+        elif config.dataset.kind in {"bird", "qasper", "bfcl"}:
+            from .research_tasks import evaluate_research
+
+            task = Task(**payload["task"])
+            submitted = attempt / "submission.json"
+            values = [json.loads(submitted.read_text())] if submitted.exists() else []
+            report = evaluate_research(config, output, [task.task_id], values)
         else:
             from .retrieval import evaluate_retrieval
 
@@ -514,13 +521,18 @@ def evaluate_campaign(root):
             submitted = attempt / "submission.json"
             value = json.loads(submitted.read_text()) if submitted.exists() else None
             output.mkdir(parents=True)
-            if job["adapter"] == "hotpot":
+            if job["adapter"] in {"hotpot", "twowiki"}:
                 predictions = output / "predictions.json"
                 write_json(
                     predictions,
                     {
                         "answer": {task.task_id: value["answer"] if value else ""},
                         "sp": {task.task_id: value["sp"] if value else []},
+                        **(
+                            {"evidence": {task.task_id: value.get("evidence", []) if value else []}}
+                            if job["adapter"] == "twowiki"
+                            else {}
+                        ),
                     },
                 )
             else:
@@ -537,7 +549,11 @@ def evaluate_campaign(root):
                     },
                 )
             report = evaluate_retrieval(
-                config, output, [task.task_id], predictions, execute=job["adapter"] == "hotpot"
+                config,
+                output,
+                [task.task_id],
+                predictions,
+                execute=job["adapter"] in {"hotpot", "twowiki"},
             )
         results.append({"job_id": job["job_id"], "evaluation": report})
     write_json(root / "evaluation_summary.json", results)

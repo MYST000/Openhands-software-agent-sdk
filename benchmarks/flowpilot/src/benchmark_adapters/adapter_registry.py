@@ -16,6 +16,27 @@ class AdapterRegistration:
 
 
 ADAPTERS = {
+    "bird": AdapterRegistration(
+        "bird",
+        "bird-bench/mini-dev",
+        "openhands-sqlite-v1",
+        "sqlite-read-only-v1",
+        ("get_schema", "execute_sql"),
+    ),
+    "qasper": AdapterRegistration(
+        "qasper",
+        "allenai/qasper",
+        "openhands-paper-short-text-v1",
+        "paper-bm25-v1",
+        ("search_paper", "read_paragraph"),
+    ),
+    "bfcl": AdapterRegistration(
+        "bfcl",
+        "gorilla/BFCL-v4-web-search",
+        "openhands-web-search-v1",
+        "live-web-search-v1",
+        ("search_engine_query", "fetch_url_content"),
+    ),
     "quixbugs": AdapterRegistration(
         "quixbugs",
         "jkoppel/QuixBugs",
@@ -39,6 +60,13 @@ ADAPTERS = {
         "fixed-corpus-sentences-v1",
         ("search", "read_document"),
     ),
+    "twowiki": AdapterRegistration(
+        "twowiki",
+        "Alab-NII/2wikimultihop",
+        "fullwiki-fixed-corpus-v1",
+        "fixed-corpus-sentences-v1",
+        ("search", "read_document"),
+    ),
     "browsecomp": AdapterRegistration(
         "browsecomp",
         "Tevatron/browsecomp-plus",
@@ -53,6 +81,19 @@ def resolve_adapter(config: Config) -> AdapterRegistration:
     registration = ADAPTERS.get(config.dataset.kind)
     if registration is None:
         raise ValueError("No registered mixed-workload adapter for dataset.kind")
+    if registration.kind == "qasper" and config.retrieval.qasper_context_mode == "document":
+        registration = replace(
+            registration,
+            setting="openhands-paper-document-short-text-v1",
+            tool_profile="paper-document-bm25-v1",
+            environment_tools=("read_paper", "search_paper", "read_paragraph"),
+        )
+    if registration.kind in {"hotpot", "twowiki"} and config.retrieval.backend == "wikipedia_live":
+        registration = replace(
+            registration,
+            setting="fullwiki-live-wikipedia-v1",
+            tool_profile="live-wikipedia-sentences-v1",
+        )
     if (config.dataset.id, config.dataset.setting) != (
         registration.dataset_id,
         registration.setting,
@@ -84,7 +125,20 @@ def load_adapter_tasks(config, ids, *, checker_path=None):
 
     dataset_digest = checked_dataset_digest(config)
 
-    adapter = HotpotAdapter if registration.kind == "hotpot" else BrowseCompAdapter
+    if registration.kind in {"bird", "qasper", "bfcl"}:
+        from .research_tasks import load_tasks
+
+        return [(task, None) for task in load_tasks(config, ids)], {
+            "revision": config.dataset.revision,
+            "dataset_sha256": dataset_digest,
+            "corpus_revision": config.retrieval.corpus_revision,
+            "selection_rule": "explicit task IDs; no outcome filtering",
+        }
+    from .twowiki import TwoWikiAdapter
+
+    adapter = {"hotpot": HotpotAdapter, "twowiki": TwoWikiAdapter, "browsecomp": BrowseCompAdapter}[
+        registration.kind
+    ]
     tasks = adapter.load(
         config.dataset.path,
         dataset_id=config.dataset.id,
@@ -93,6 +147,18 @@ def load_adapter_tasks(config, ids, *, checker_path=None):
         ids=ids,
         limit=0,
     )
+    if config.retrieval.backend == "wikipedia_live":
+        tasks = [
+            replace(
+                task,
+                instruction=task.instruction.replace(
+                    "fixed Wikipedia corpus", "live English Wikipedia"
+                )
+                .replace("official title", "page title")
+                .replace("original sentence numbers", "page-local sentence numbers"),
+            )
+            for task in tasks
+        ]
     return [(task, None) for task in tasks], {
         "revision": config.dataset.revision,
         "dataset_sha256": dataset_digest,

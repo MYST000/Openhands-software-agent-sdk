@@ -1,0 +1,66 @@
+Tool-heavy pilot adapters
+=========================
+
+2WikiMultiHopQA and Hotpot live Wikipedia use the benchmark_adapters runner.
+RDKit uses the separate native OpenHands probe added in rdkit_probe.py.
+These are the existing server pilot workloads, not a full ChemCrow benchmark.
+
+Install the local SDK and benchmark package from the repository root:
+
+  python -m pip install -e ./openhands-sdk -e ./openhands-tools
+  python -m pip install -e './benchmarks/flowpilot[research,rdkit]'
+
+RDKit (an already-running OpenAI-compatible vLLM endpoint is required):
+
+  python -m benchmark_adapters.rdkit_probe \
+    --molecule-id octacosane \
+    --base-url http://127.0.0.1:8000/v1 \
+    --model openai/Qwen3.5-27B \
+    --output ./runs/rdkit-octacosane
+
+The other fixed molecule is hexadecane. The tool resolves the exact SMILES
+from the molecule ID and enforces 128 conformers, seed 41, 500 iterations,
+ETKDGv3 without RMS pruning, MMFF94s, and one CPU thread. RDKit is pinned
+to 2025.9.6. An isolated RDKit Python can be selected with --rdkit-python;
+the bundled worker is launched directly and needs only RDKit and its deps.
+Thinking is disabled. events.jsonl records LLM calls, tool dispatch/return,
+effective arguments, and embedding/optimization timings; result.json has
+JCT and the final answer. This native probe does not enable FlowPilot reuse,
+prediction, admission control, or KV retention/offload. Computation is
+reusable only with matching molecule, parameters, tool/build version and
+result schema. Execution timings must not become a fresh cache-hit timing.
+
+Live Wikipedia:
+
+Copy hotpot.live.example.toml or twowiki.live.example.toml, then replace
+dataset.path, dataset.revision, dataset.sha256 and retrieval.corpus_revision.
+Paths are resolved relative to the TOML file. Set web_proxy if needed.
+Download the official data separately; no datasets are committed here.
+2Wiki data/release information: https://github.com/Alab-NII/2wikimultihop
+Hotpot data/release information: https://hotpotqa.github.io/
+
+  python -m benchmark_adapters.cli list --config ./configs/local.toml --limit 1
+  python -m benchmark_adapters.cli doctor --config ./configs/local.toml
+  python -m benchmark_adapters.cli run --config ./configs/local.toml --limit 1
+
+Both workloads expose search and read_document against English Wikipedia.
+The backend has no hidden result cache. HTTP 429/503 Retry-After waiting is
+included in tool RTT; network_attempt events retain status and retry timing.
+Pages are live rather than a pinned snapshot. Returned sentence IDs are
+page-local and differ from the historical benchmark corpus. Answer EM/F1 is
+the primary quality check; live supporting-fact scores are diagnostic.
+2Wiki also exports evidence triples and uses the hash-checked official
+scorer in vendor/twowiki. This scorer reports metrics on a 0..100 scale.
+
+FlowPilot reuse integration (requires the modified SDK and a FlowPilot
+gateway, rather than the native RDKit probe):
+
+  python -m benchmark_adapters.reuse_profile \
+    --config ./configs/local.toml --output ./tool-registry.json
+
+Supply the exported registry through FLOWPILOT_EXPERIMENT_REGISTRY when
+using FlowPilot's experiment launcher. A new live session/corpus revision
+changes the reuse scope; Hotpot and 2Wiki also have separate scopes. The
+Qwen3.5-27B TP4 experiment profile in the FlowPilot repository sets the
+tool-cache payload budget to 1 GiB and the TTL to 86400 seconds. RDKit is
+not registered for gateway caching by this upload.

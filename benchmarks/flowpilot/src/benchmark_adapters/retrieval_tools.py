@@ -126,6 +126,7 @@ class RetrievalExecutor(ToolExecutor):
                 timed_out=False,
             )
             return observation
+
         except Exception as exc:
             timing = b.environment.last_timing if remote else {}
             text = str(exc)
@@ -149,6 +150,9 @@ class RetrievalExecutor(ToolExecutor):
                 timed_out=isinstance(exc, TimeoutError),
             )
             return observation
+        finally:
+            for attempt in getattr(b.environment, "last_http_attempts", []):
+                b.recorder.emit("network_attempt", tool_name=self.name, **link, **attempt)
 
 
 class RetrievalToolDefinition(ToolDefinition):
@@ -179,6 +183,8 @@ class SearchTool(RetrievalToolDefinition):
                 description=(
                     b.environment.tool_definitions["search"].description
                     if b.environment.config.retrieval.backend == "browsecomp_mcp"
+                    else "Search live English Wikipedia. Return docid, title, URL and snippet. Use the returned docid to read a page."
+                    if b.environment.config.retrieval.backend == "wikipedia_live"
                     else f"Search the fixed corpus. Return docid, title, URL and snippet. top_k must be <= {b.environment.config.retrieval.top_k}."
                 ),
                 executor=RetrievalExecutor(b, cls.name),
@@ -195,7 +201,11 @@ class ReadDocumentTool(RetrievalToolDefinition):
             cls(
                 action_type=HotpotReadAction,
                 observation_type=RetrievalObservation,
-                description="Read original Wikipedia sentences by doc_id. Returns official title and original zero-based sentence IDs. Use these IDs in supporting_facts.",
+                description=(
+                    "Read a live Wikipedia page by doc_id. Returns page title, page revision and current page-local sentence IDs. Use these IDs in supporting_facts."
+                    if b.environment.config.retrieval.backend == "wikipedia_live"
+                    else "Read original Wikipedia sentences by doc_id. Returns official title and original zero-based sentence IDs. Use these IDs in supporting_facts."
+                ),
                 executor=RetrievalExecutor(b, cls.name),
                 annotations=ToolAnnotations(readOnlyHint=True),
             )
@@ -229,7 +239,11 @@ for tool in [SearchTool, ReadDocumentTool, GetDocumentTool]:
 
 def make_tools(binding_key):
     b = get_binding(binding_key)
-    read = ReadDocumentTool if b.environment.config.dataset.kind == "hotpot" else GetDocumentTool
+    read = (
+        ReadDocumentTool
+        if b.environment.config.dataset.kind in {"hotpot", "twowiki"}
+        else GetDocumentTool
+    )
     return [
         Tool(name=tool.name, params={"binding_key": binding_key}) for tool in [SearchTool, read]
     ]

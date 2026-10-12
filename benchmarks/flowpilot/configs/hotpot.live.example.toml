@@ -1,0 +1,37 @@
+# Fill in the released Hotpot task path, its SHA256, and your run/session revision.
+[dataset]
+kind = "hotpot"
+id = "hotpotqa"
+path = "../data/hotpot_dev_fullwiki_v1.json"
+revision = "replace-with-data-revision"
+sha256 = "replace-with-task-file-sha256"
+split = "dev"
+setting = "fullwiki-live-wikipedia-v1"
+
+[llm]
+model = "openai/Qwen3.5-27B"
+base_url = "http://127.0.0.1:8000/v1"
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+seed = 41
+presence_penalty = 1.5
+repetition_penalty = 1.0
+enable_thinking = false
+max_input_tokens = 258048
+max_output_tokens = 4096
+timeout = 900
+num_retries = 0
+
+[runtime]
+runs_dir = "../runs/hotpot-live"
+tool_timeout = 120
+
+[retrieval]
+backend = "wikipedia_live"
+corpus_revision = "replace-with-live-session-revision"
+server_policy_revision = "live-wikipedia-sentences-v1"
+top_k = 5
+# Set web_proxy explicitly if your environment requires one.
+web_proxy = ""

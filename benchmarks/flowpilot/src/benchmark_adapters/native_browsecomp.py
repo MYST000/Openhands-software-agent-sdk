@@ -119,6 +119,18 @@ class NativeBrowseCompEnvironment:
 
 
 def create_retrieval_environment(config, verified_index=None):
+    if config.retrieval.backend == "research_rpc":
+        from .remote_research import ResearchRPCEnvironment
+
+        return ResearchRPCEnvironment(config)
+    if config.retrieval.backend == "wikipedia_live":
+        from .wikipedia_live import WikipediaLiveEnvironment
+
+        return WikipediaLiveEnvironment(config)
+    if config.dataset.kind in {"bird", "qasper", "bfcl"}:
+        from .research_environment import ResearchEnvironment
+
+        return ResearchEnvironment(config)
     if config.retrieval.backend == "hotpot_rpc":
         return HotpotRPCEnvironment(config, verified_index=verified_index)
     if config.retrieval.backend == "browsecomp_mcp":
