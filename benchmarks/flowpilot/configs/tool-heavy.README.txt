@@ -2,7 +2,9 @@ Tool-heavy pilot adapters
 =========================
 
 2WikiMultiHopQA and Hotpot live Wikipedia use the benchmark_adapters runner.
-RDKit uses the separate native OpenHands probe added in rdkit_probe.py.
+RDKit conformer generation uses the separate native OpenHands probe in rdkit_probe.py.
+RDKit virtual screening (screen_target, MUV/DUD/ChEMBL) uses rdkit_screen.py;
+see rdkit-screen.README.txt for installation, data and tool/agent commands.
 These are the existing server pilot workloads, not a full ChemCrow benchmark.
 
 Install the local SDK and benchmark package from the repository root:

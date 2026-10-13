@@ -1,0 +1,73 @@
+RDKit virtual screening: screen_target
+=====================================
+
+This supplies the missing screen_target tool for the RDKit Benchmarking
+Platform workload. compute_conformers / rdkit_probe is a separate workload.
+Use the ql branch of MYST000/Openhands-software-agent-sdk with this patch.
+
+Install from the OpenHands repository root in a Python >=3.12 environment:
+
+  python -m pip install -e ./openhands-sdk -e ./openhands-tools
+  python -m pip install -e './benchmarks/flowpilot[rdkit]'
+
+Prepare the official source/data checkout (skip cloning if already present):
+
+  git clone https://github.com/rdkit/benchmarking_platform.git ./rdkit-platform
+  git -C ./rdkit-platform checkout f37fc620cd9d74e3ccb89b778d54770b6c6080d7
+
+--source-root must contain compounds/, query_lists/, and scoring/.
+Keep the published query_lists/data_sets_I files; do not generate new splits.
+The worker checks the pinned fingerprint implementation and RDKit 2025.9.6,
+and records the exact input SHA256 hashes and runtime versions in worker_ready.json.
+Dataset assets are downloaded separately and are not included in this package.
+
+First execute the registered tool without an LLM:
+
+  python -m benchmark_adapters.rdkit_screen \
+    --source-root ./rdkit-platform --dataset MUV --target 832 \
+    --fingerprint rdk7 --check-tool --output ./runs/rdkit-screen-check
+
+Then run an OpenHands agent against an existing native vLLM endpoint:
+
+  python -m benchmark_adapters.rdkit_screen \
+    --source-root ./rdkit-platform --dataset MUV --target 832 \
+    --fingerprint rdk7 --base-url http://127.0.0.1:8000/v1 \
+    --model openai/Qwen3.5-27B --output ./runs/rdkit-screen-agent
+
+Use a new --output directory for each run. Set LLM_API_KEY if required.
+The equivalent installed command is openhands-rdkit-screen.
+An isolated RDKit environment can be selected with --rdkit-python /path/to/python;
+that interpreter needs rdkit==2025.9.6 and numpy, not the OpenHands SDK.
+Supported datasets: MUV, DUD, ChEMBL. Targets are the exact official IDs
+(e.g. --dataset MUV --target 832, not --target MUV832).
+
+The numerical protocol is unchanged: official rdk7 (or ecfp4), Dice
+similarity, max fusion over 5 active queries, all 50 published splits,
+with training actives and training decoys excluded from each test set.
+The persistent worker recomputes fingerprints and scores on every call.
+This native runner does not enable FlowPilot caching, prediction or KV control.
+It does not add dataset.kind=rdkit to benchmark_adapters.cli or the mixed runner.
+Use the dedicated command above. Existing custom runners can import
+ScreenEnvironment and screening_tools from benchmark_adapters.rdkit_screen,
+bind the environment through sdk_bridge.Binding, pass screening_tools(key)
+to Agent(tools=...), and close/unbind the environment after the conversation.
+Each task needs its own environment; tool_concurrency_limit must be 1.
+
+Outputs include events.jsonl, worker_outputs.json, result.json, and complete
+scores/indices/labels/IDs in artifacts/*.npz. Errors are flagged is_error=True;
+the worker is terminated on timeout. These artifacts are local to the attempt
+and are not a portable cache-hit payload. Do not register this result for
+gateway reuse without implementing artifact delivery and versioned reuse scope.
+
+The response/prompt protocol is rdkit-screen-counts-v2. It distinguishes:
+  test_candidates_per_split: 12025 for MUV832
+  test_candidate_occurrences_all_splits: 601250 for MUV832
+The latter includes repeated molecules across splits, not unique molecules.
+First-split top-five IDs for the pinned MUV832/RDK7 inputs:
+  MUV_832_A_8, MUV_832_D_4494, MUV_832_D_13085, MUV_832_A_7, MUV_832_D_13435
+Historical strict per-split scores remain unchanged; do not relabel old runs.
+result.json execution_status describes execution, not an official quality score.
+
+Regression checks from the repository root:
+
+  python -m pytest -q benchmarks/flowpilot/tests/test_rdkit_screen.py
